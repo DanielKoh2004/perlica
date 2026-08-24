@@ -249,14 +249,51 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 6. Streak Footer
+    # 6. Recurring Bills Configured
+    if payload.add_bill_name and payload.add_bill_amount is not None:
+        b_cat = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
+        day_str = f"on the {payload.add_bill_day}th" if payload.add_bill_day else "monthly"
+        embed.add_field(
+            name="🔔 Recurring Bill Configured",
+            value=f"• **{payload.add_bill_name}** — RM {payload.add_bill_amount:.2f} (`{b_cat}`) {day_str}\n_(Human-in-the-loop reminder only — will alert you on the {payload.add_bill_day or 1}th)_",
+            inline=False,
+        )
+
+    # 7. New Savings Goals Created
+    if payload.goal_create_name and payload.goal_create_target:
+        target_d = f" | Target Date: `{payload.goal_create_date}`" if payload.goal_create_date else ""
+        embed.add_field(
+            name="🏆 New Savings Goal Created",
+            value=f"• **{payload.goal_create_name}** — Target: **RM {payload.goal_create_target:.2f}**{target_d}\n_(Dedicated asset accumulation fund)_",
+            inline=False,
+        )
+
+    # 8. Monthly Budgets Configured
+    if payload.set_budget_category and payload.set_budget_amount is not None:
+        embed.add_field(
+            name="🎯 Monthly Budget Configured",
+            value=f"• **{payload.set_budget_category}:** RM {payload.set_budget_amount:.2f} monthly limit",
+            inline=False,
+        )
+
+    # 9. Streak Footer
     if streak_info and streak_info.get("streak_days", 0) > 0:
         embed.set_footer(
             text=f"🔥 {streak_info['streak_days']}-Day Logging Streak | {streak_info.get('completed_this_week', 0)} tasks crushed this week!"
         )
 
-    # 7. Conversational Reply fallback
-    if payload.conversational_reply and not inserted_expenses and not inserted_tasks and not completed_tasks and not goal_update_info and not payload.ambiguous_task_note:
+    # 10. Conversational Reply fallback
+    has_content = bool(
+        inserted_expenses
+        or inserted_tasks
+        or completed_tasks
+        or goal_update_info
+        or payload.add_bill_name
+        or payload.goal_create_name
+        or payload.set_budget_category
+        or payload.ambiguous_task_note
+    )
+    if payload.conversational_reply and not has_content:
         embed.description = payload.conversational_reply
 
     return embed
