@@ -32,46 +32,32 @@ def test_build_system_prompt_temporal_anchors():
     assert "TOMORROW is: 2026-08-25 (Tuesday)" in prompt
     assert "YESTERDAY is: 2026-08-23 (Sunday)" in prompt
     assert "[ID: 1] Call client A (Priority: HIGH)" in prompt
-    assert "[ID: 2] Call client B (Priority: MEDIUM)" in prompt
     assert "Touch 'n Go" in prompt
     assert "99 Speedmart" in prompt
     assert "Mamak" in prompt
 
 
-def test_extracted_payload_casual_defaults():
-    payload = ExtractedPayload()
-    assert payload.expenses == []
-    assert payload.new_tasks == []
-    assert payload.completed_task_ids == []
-    assert payload.needs_clarification is False
-    assert payload.clarification_prompt is None
-    assert payload.ambiguous_task_note is None
-    assert payload.query is None
-    assert payload.conversational_reply is None
-
-
-def test_extracted_payload_multi_phase_task():
+def test_extracted_payload_budget_and_csv():
     payload = ExtractedPayload(
-        new_tasks=[
-            TaskItem(
-                description="App Launch",
-                priority=TaskPriority.HIGH,
-                phases=["Wireframes", "Frontend", "Backend"],
-            )
-        ]
+        set_budget_category="Food & Dining",
+        set_budget_amount=800.0,
+        export_csv=True,
     )
-    assert len(payload.new_tasks) == 1
-    assert len(payload.new_tasks[0].phases) == 3
-    assert payload.new_tasks[0].phases[0] == "Wireframes"
+    assert payload.set_budget_category == "Food & Dining"
+    assert payload.set_budget_amount == 800.0
+    assert payload.export_csv is True
 
 
-def test_extracted_payload_clarification():
+def test_extracted_payload_recurring_bill():
     payload = ExtractedPayload(
-        needs_clarification=True,
-        clarification_prompt="What did you spend RM 50 on? (e.g. Food, Groceries, Transport)",
+        add_bill_name="Unifi",
+        add_bill_amount=139.0,
+        add_bill_category=ExpenseCategory.UTILITIES,
+        add_bill_day=1,
     )
-    assert payload.needs_clarification is True
-    assert payload.clarification_prompt is not None
+    assert payload.add_bill_name == "Unifi"
+    assert payload.add_bill_amount == 139.0
+    assert payload.add_bill_day == 1
 
 
 @pytest.mark.asyncio

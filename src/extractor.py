@@ -1,7 +1,8 @@
 import logging
+import io
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal, Dict, Any, Tuple
 from pydantic import BaseModel, Field, ValidationError
 from groq import AsyncGroq
 import instructor
@@ -81,7 +82,7 @@ class TaskItem(BaseModel):
 
 
 class QueryScope(BaseModel):
-    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "GENERAL"] = Field(
+    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "BUDGETS", "BILLS", "GENERAL"] = Field(
         ...,
         description="Target dataset or intent to view/analyze.",
     )
@@ -161,6 +162,38 @@ class ExtractedPayload(BaseModel):
         default=None,
         description="ID of task to reopen from DONE back to OPEN (e.g. 'reopen task #2').",
     )
+    # Budget Configuration
+    set_budget_category: Optional[str] = Field(
+        default=None,
+        description="Category name to set monthly budget limit for (e.g. 'Food & Dining', 'Entertainment', 'Transport', or 'Total').",
+    )
+    set_budget_amount: Optional[float] = Field(
+        default=None,
+        description="Monthly budget limit amount in MYR.",
+    )
+    # Recurring Bill Configuration (Human in the loop reminders only)
+    add_bill_name: Optional[str] = Field(
+        default=None,
+        description="Name of recurring bill (e.g. 'Unifi', 'Netflix', 'Rent').",
+    )
+    add_bill_amount: Optional[float] = Field(
+        default=None,
+        description="Amount of recurring bill in MYR.",
+    )
+    add_bill_category: Optional[ExpenseCategory] = Field(
+        default=None,
+        description="Category of the recurring bill.",
+    )
+    add_bill_day: Optional[int] = Field(
+        default=None,
+        description="Day of the month the bill is due (1-31).",
+    )
+    # CSV Data Export
+    export_csv: bool = Field(
+        default=False,
+        description="Set to true if user wants to download or export their expenses as a CSV/spreadsheet file.",
+    )
+    # Clarification
     needs_clarification: bool = Field(
         default=False,
         description="Set to true if user input was underspecified or ambiguous (e.g. logged amount without item/category) to avoid making assumptions.",
@@ -198,7 +231,7 @@ def build_system_prompt(now_local: datetime, open_tasks: List[Dict[str, Any]]) -
     else:
         tasks_formatted = "No active open tasks."
 
-    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, edits/undo, and giving smart advice.
+    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, budgets, recurring bills, and giving smart advice.
 
 LOCAL TIME REFERENCE:
 - Current Local Timestamp: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
@@ -223,7 +256,16 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - If the user provides an expense amount without ANY item, vendor, or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport / TNG, Shopping, Utilities)?", and leave expenses=[].
    - If the user provides clear local context (e.g. "Reload TNG RM 50", "99 Speedmart RM 32", "RON95 RM 40", "Mamak lunch RM 12"), log it immediately under the correct category without asking.
 
-3. UNDO, DELETE, EDIT & REOPEN:
+3. BUDGET & RECURRING BILL COMMANDS:
+   - If user says "Set monthly food budget to 800": set set_budget_category="Food & Dining", set_budget_amount=800.0.
+   - If user says "Set monthly entertainment budget to 200": set set_budget_category="Entertainment", set_budget_amount=200.0.
+   - If user says "Add recurring bill: Netflix RM 55 on the 15th": set add_bill_name="Netflix", add_bill_amount=55.0, add_bill_category=ExpenseCategory.ENTERTAINMENT, add_bill_day=15.
+   - If user says "Add recurring bill: Unifi RM 139 on the 1st": set add_bill_name="Unifi", add_bill_amount=139.0, add_bill_category=ExpenseCategory.UTILITIES, add_bill_day=1.
+
+4. CSV EXPORT:
+   - If user says "export expenses", "download csv", "export to excel", "export this month": set export_csv=True.
+
+5. UNDO, DELETE, EDIT & REOPEN:
    - If user says "undo", "cancel that", "undo last": set undo_intent="LAST" (or "EXPENSE"/"TASK").
    - If user says "delete expense #3": set delete_expense_id=3.
    - If user says "delete task #5": set delete_task_id=5.
@@ -231,16 +273,16 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - If user says "update task #4 due date to tomorrow": set edit_task_id=4, edit_task_due_date calculated from tomorrow.
    - If user says "reopen task #1" or "mark task #1 open": set reopen_task_id=1.
 
-4. MULTI-PHASE TASKS:
+6. MULTI-PHASE TASKS:
    - If the user specifies sub-steps or phases (e.g. "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing"), populate TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
 
-5. ON-DEMAND SUMMARIES & RECAPS:
+7. ON-DEMAND SUMMARIES & RECAPS:
    - If the user asks for a summary (e.g. 'summarize today', 'recap my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
 
-6. TASK COMPLETIONS:
+8. TASK COMPLETIONS:
    - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID. If ambiguous, explain in ambiguous_task_note with conflicting task IDs.
 
-7. CASUAL CONVERSATION:
+9. CASUAL CONVERSATION:
    - For greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?'), provide a warm, concise conversational_reply.
 """
 
@@ -264,6 +306,22 @@ class ExtractionEngine:
                 raw_client, mode=instructor.Mode.JSON
             )
         return self._instructor_client
+
+    async def transcribe_audio(self, audio_file_tuple: Tuple[str, bytes]) -> str:
+        """Transcribe voice note or audio bytes using Groq's whisper-large-v3-turbo."""
+        groq_client = self._get_groq_client()
+        filename, file_bytes = audio_file_tuple
+        try:
+            transcription = await groq_client.audio.transcriptions.create(
+                file=(filename, file_bytes),
+                model="whisper-large-v3-turbo",
+                response_format="json",
+                language="en",
+            )
+            return transcription.text.strip()
+        except Exception as e:
+            logger.error(f"Whisper transcription failed: {e}", exc_info=True)
+            return ""
 
     async def extract_information(
         self,

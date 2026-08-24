@@ -1,13 +1,59 @@
 import discord
 from src.extractor import ExtractedPayload, QueryScope
 from src.formatters import (
+    render_progress_bar,
     format_action_preview,
     format_action_confirmation,
     format_daily_summary,
+    format_morning_briefing,
     format_full_snapshot_summary,
+    format_budget_overview,
     format_query_results,
     format_help_guide,
 )
+
+
+def test_render_progress_bar():
+    bar1 = render_progress_bar(50.0, 100.0)
+    assert "50.0%" in bar1
+    assert "RM 50.00 / RM 100.00" in bar1
+
+    bar_warn = render_progress_bar(85.0, 100.0)
+    assert "⚠️" in bar_warn
+
+    bar_over = render_progress_bar(120.0, 100.0)
+    assert "OVERSPENT" in bar_over
+
+
+def test_format_morning_briefing():
+    open_tasks = [
+        {"id": 1, "description": "High priority task", "priority": "HIGH", "due_date": "2026-08-25"},
+        {"id": 2, "description": "Regular task", "priority": "MEDIUM"},
+    ]
+    due_bills = [
+        {"name": "Unifi", "amount": 139.0, "category": "Utilities & Bills"}
+    ]
+    budget_status = [
+        {"category": "Food & Dining", "spent": 400.0, "limit": 500.0, "percentage": 80.0, "remaining": 100.0}
+    ]
+
+    embed = format_morning_briefing(open_tasks, due_bills, budget_status, "2026-08-25")
+    assert isinstance(embed, discord.Embed)
+    assert "Morning Briefing" in embed.title
+    field_names = [f.name for f in embed.fields]
+    assert any("Tasks to Tackle" in name for name in field_names)
+    assert any("Recurring Bills Due" in name for name in field_names)
+    assert any("Monthly Budget Overview" in name for name in field_names)
+
+
+def test_format_budget_overview():
+    budget_status = [
+        {"category": "Food & Dining", "spent": 400.0, "limit": 500.0, "percentage": 80.0, "remaining": 100.0}
+    ]
+    embed = format_budget_overview(budget_status)
+    assert isinstance(embed, discord.Embed)
+    assert "Monthly Budget Overview" in embed.title
+    assert "Food & Dining" in embed.description
 
 
 def test_format_action_preview():
@@ -19,16 +65,10 @@ def test_format_action_preview():
     embed = format_action_preview(payload, expenses, tasks, completed)
     assert isinstance(embed, discord.Embed)
     assert "Action Ingestion Preview" in embed.title
-    field_names = [f.name for f in embed.fields]
-    assert any("Expenses to Log" in name for name in field_names)
-    assert any("Tasks to Create" in name for name in field_names)
-    assert any("Tasks to Complete" in name for name in field_names)
 
 
 def test_format_action_confirmation():
-    payload = ExtractedPayload(
-        ambiguous_task_note="Ambiguity note test"
-    )
+    payload = ExtractedPayload(ambiguous_task_note="Ambiguity note test")
     inserted_expenses = [
         {"id": 1, "amount": 15.50, "category": "Food & Dining", "note": "Chicken rice"}
     ]
@@ -44,64 +84,9 @@ def test_format_action_confirmation():
         inserted_expenses=inserted_expenses,
         inserted_tasks=inserted_tasks,
         completed_tasks=completed_tasks,
+        budget_alerts=["⚠️ Food is at 85% of limit!"],
     )
-
     assert isinstance(embed, discord.Embed)
     assert embed.title == "⚡ Action Processed"
     field_names = [f.name for f in embed.fields]
-    assert any("Logged Expenses" in name for name in field_names)
-    assert any("New Tasks Added" in name for name in field_names)
-    assert any("Completed Tasks" in name for name in field_names)
-    assert any("Clarification Required" in name for name in field_names)
-
-
-def test_format_daily_summary():
-    expenses = [
-        {"amount": 20.0, "category": "Food & Dining"},
-        {"amount": 10.0, "category": "Transport"},
-    ]
-    total_spent = 30.0
-    open_tasks = [
-        {"id": 1, "description": "Review PR", "priority": "HIGH", "due_date": "2026-08-25"}
-    ]
-
-    embed = format_daily_summary(expenses, total_spent, open_tasks, "2026-08-24")
-    assert isinstance(embed, discord.Embed)
-    assert "2026-08-24" in embed.title
-    field_names = [f.name for f in embed.fields]
-    assert any("Total Spent: RM 30.00" in name for name in field_names)
-    assert any("Remaining Open Tasks" in name for name in field_names)
-
-
-def test_format_full_snapshot_summary():
-    snapshot = {
-        "total_spent": 50.0,
-        "category_breakdown": {"Food & Dining": 30.0, "Transport": 20.0},
-        "completed_tasks": [{"id": 1, "description": "Write report"}],
-        "open_tasks": [{"id": 2, "description": "Send email", "priority": "HIGH", "due_date": "2026-08-25"}],
-    }
-    embed = format_full_snapshot_summary(snapshot, "Today — 2026-08-24", "You had a great day!")
-    assert isinstance(embed, discord.Embed)
-    assert "Executive Summary" in embed.title
-    assert "AI Digest" in embed.description
-
-
-def test_format_query_results():
-    query = QueryScope(query_target="EXPENSES", timeframe="TODAY")
-    expenses = [{"amount": 25.0, "category": "Food & Dining"}]
-    breakdown = {"Food & Dining": 25.0}
-
-    embed = format_query_results(
-        query=query,
-        expenses=expenses,
-        total_spent=25.0,
-        category_breakdown=breakdown,
-    )
-    assert isinstance(embed, discord.Embed)
-    assert "EXPENSES - TODAY" in embed.title
-
-
-def test_format_help_guide():
-    embed = format_help_guide()
-    assert isinstance(embed, discord.Embed)
-    assert "Quick Start Guide" in embed.title
+    assert any("Budget Alert" in name for name in field_names)

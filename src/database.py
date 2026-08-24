@@ -1,4 +1,6 @@
 import os
+import io
+import csv
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Tuple, Any, AsyncGenerator
@@ -16,12 +18,13 @@ class DatabaseManager:
             yield conn
 
     async def init_db(self) -> None:
-        """Initialize SQLite database tables, indexes, and apply column migrations."""
+        """Initialize SQLite database tables, indexes, and apply migrations."""
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
         async with self.get_connection() as conn:
+            # 1. Expenses Table
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS expenses (
@@ -33,6 +36,7 @@ class DatabaseManager:
                 );
                 """
             )
+            # 2. Tasks Table
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -50,8 +54,31 @@ class DatabaseManager:
                 );
                 """
             )
+            # 3. Monthly Budgets Table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS budgets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT UNIQUE NOT NULL,
+                    monthly_limit REAL NOT NULL
+                );
+                """
+            )
+            # 4. Recurring Bills Table (Human-in-the-loop reminders only)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS recurring_bills (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    category TEXT NOT NULL,
+                    day_of_month INTEGER NOT NULL,
+                    is_active INTEGER DEFAULT 1
+                );
+                """
+            )
 
-            # Auto-migration for existing tasks table missing phase columns
+            # Auto-migration for tasks table columns
             async with conn.execute("PRAGMA table_info(tasks);") as cursor:
                 columns = [row["name"] for row in await cursor.fetchall()]
                 if "parent_id" not in columns:
@@ -72,6 +99,8 @@ class DatabaseManager:
             )
             await conn.commit()
 
+    # --- EXPENSES ---
+
     async def insert_expense(
         self,
         amount: float,
@@ -90,6 +119,55 @@ class DatabaseManager:
             )
             await conn.commit()
             return cursor.lastrowid
+
+    async def get_expense_by_id(self, expense_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific expense by ID."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM expenses WHERE id = ?", (expense_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_last_expense(self) -> Optional[Dict[str, Any]]:
+        """Fetch the most recently created expense."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM expenses ORDER BY id DESC LIMIT 1") as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def delete_expense(self, expense_id: int) -> Optional[Dict[str, Any]]:
+        """Delete an expense by ID and return its data."""
+        exp = await self.get_expense_by_id(expense_id)
+        if not exp:
+            return None
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+            await conn.commit()
+        return exp
+
+    async def update_expense(
+        self,
+        expense_id: int,
+        amount: Optional[float] = None,
+        category: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing expense."""
+        exp = await self.get_expense_by_id(expense_id)
+        if not exp:
+            return None
+        new_amount = round(amount, 2) if amount is not None else exp["amount"]
+        new_cat = category or exp["category"]
+        new_note = note if note is not None else exp["note"]
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "UPDATE expenses SET amount = ?, category = ?, note = ? WHERE id = ?",
+                (new_amount, new_cat, new_note, expense_id),
+            )
+            await conn.commit()
+        return await self.get_expense_by_id(expense_id)
+
+    # --- TASKS ---
 
     async def insert_task(
         self,
@@ -159,24 +237,10 @@ class DatabaseManager:
 
         return parent_id, subtasks
 
-    async def get_expense_by_id(self, expense_id: int) -> Optional[Dict[str, Any]]:
-        """Fetch a specific expense by ID."""
-        async with self.get_connection() as conn:
-            async with conn.execute("SELECT * FROM expenses WHERE id = ?", (expense_id,)) as cur:
-                row = await cur.fetchone()
-                return dict(row) if row else None
-
     async def get_task_by_id(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a specific task by ID."""
         async with self.get_connection() as conn:
             async with conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)) as cur:
-                row = await cur.fetchone()
-                return dict(row) if row else None
-
-    async def get_last_expense(self) -> Optional[Dict[str, Any]]:
-        """Fetch the most recently created expense."""
-        async with self.get_connection() as conn:
-            async with conn.execute("SELECT * FROM expenses ORDER BY id DESC LIMIT 1") as cur:
                 row = await cur.fetchone()
                 return dict(row) if row else None
 
@@ -187,16 +251,6 @@ class DatabaseManager:
                 row = await cur.fetchone()
                 return dict(row) if row else None
 
-    async def delete_expense(self, expense_id: int) -> Optional[Dict[str, Any]]:
-        """Delete an expense by ID and return its data."""
-        exp = await self.get_expense_by_id(expense_id)
-        if not exp:
-            return None
-        async with self.get_connection() as conn:
-            await conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
-            await conn.commit()
-        return exp
-
     async def delete_task(self, task_id: int) -> Optional[Dict[str, Any]]:
         """Delete a task (and all its subphases if parent) by ID."""
         task = await self.get_task_by_id(task_id)
@@ -206,29 +260,6 @@ class DatabaseManager:
             await conn.execute("DELETE FROM tasks WHERE id = ? OR parent_id = ?", (task_id, task_id))
             await conn.commit()
         return task
-
-    async def update_expense(
-        self,
-        expense_id: int,
-        amount: Optional[float] = None,
-        category: Optional[str] = None,
-        note: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Update an existing expense."""
-        exp = await self.get_expense_by_id(expense_id)
-        if not exp:
-            return None
-        new_amount = round(amount, 2) if amount is not None else exp["amount"]
-        new_cat = category or exp["category"]
-        new_note = note if note is not None else exp["note"]
-
-        async with self.get_connection() as conn:
-            await conn.execute(
-                "UPDATE expenses SET amount = ?, category = ?, note = ? WHERE id = ?",
-                (new_amount, new_cat, new_note, expense_id),
-            )
-            await conn.commit()
-        return await self.get_expense_by_id(expense_id)
 
     async def update_task(
         self,
@@ -266,8 +297,7 @@ class DatabaseManager:
     ) -> Optional[Dict[str, Any]]:
         """
         Deterministically mark a task as DONE by its exact integer ID.
-        If it has sub-phases, completing the parent completes all remaining subphases.
-        If a subphase is completed, check if all sibling phases are completed to auto-complete parent.
+        Completing a parent completes all child phases.
         """
         async with self.get_connection() as conn:
             async with conn.execute(
@@ -278,19 +308,16 @@ class DatabaseManager:
                     return None
                 task_dict = dict(row)
 
-            # Mark this task as DONE
             await conn.execute(
                 "UPDATE tasks SET status = 'DONE', completed_at = ? WHERE id = ?",
                 (completed_at, task_id),
             )
 
-            # If this was a parent task, mark all open child phases as DONE
             await conn.execute(
                 "UPDATE tasks SET status = 'DONE', completed_at = ? WHERE parent_id = ? AND status = 'OPEN'",
                 (completed_at, task_id),
             )
 
-            # If this was a child phase, check if all sibling phases of the parent are done
             if task_dict.get("parent_id"):
                 parent_id = task_dict["parent_id"]
                 async with conn.execute(
@@ -321,9 +348,7 @@ class DatabaseManager:
         return completed
 
     async def get_open_tasks(self) -> List[Dict[str, Any]]:
-        """
-        Return active OPEN tasks ordered by priority and hierarchy (parents first, with subphases).
-        """
+        """Return active OPEN tasks ordered by priority and hierarchy."""
         async with self.get_connection() as conn:
             async with conn.execute(
                 """
@@ -365,6 +390,107 @@ class DatabaseManager:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    # --- BUDGETS & OVERSPEND ---
+
+    async def set_budget(self, category: str, monthly_limit: float) -> Dict[str, Any]:
+        """Insert or update a monthly budget limit for a category."""
+        limit_rounded = round(monthly_limit, 2)
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO budgets (category, monthly_limit)
+                VALUES (?, ?)
+                ON CONFLICT(category) DO UPDATE SET monthly_limit = excluded.monthly_limit
+                """,
+                (category, limit_rounded),
+            )
+            await conn.commit()
+        return {"category": category, "monthly_limit": limit_rounded}
+
+    async def get_budgets(self) -> Dict[str, float]:
+        """Fetch all configured monthly budget limits."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT category, monthly_limit FROM budgets") as cur:
+                rows = await cur.fetchall()
+                return {row["category"]: row["monthly_limit"] for row in rows}
+
+    async def get_budget_status(self, year_month_str: str) -> List[Dict[str, Any]]:
+        """
+        Calculate budget utilization for the month (YYYY-MM).
+        Returns list of dicts with category, spent, limit, percentage, and remaining.
+        """
+        budgets = await self.get_budgets()
+        if not budgets:
+            return []
+
+        # Get spending in this month
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT category, SUM(amount) as total_spent
+                FROM expenses
+                WHERE substr(created_at, 1, 7) = ?
+                GROUP BY category
+                """,
+                (year_month_str,),
+            ) as cur:
+                rows = await cur.fetchall()
+                spent_map = {row["category"]: round(row["total_spent"], 2) for row in rows}
+
+        results = []
+        for cat, limit in budgets.items():
+            spent = spent_map.get(cat, 0.0)
+            pct = round((spent / limit) * 100, 1) if limit > 0 else 0.0
+            remaining = round(limit - spent, 2)
+            results.append(
+                {
+                    "category": cat,
+                    "spent": spent,
+                    "limit": limit,
+                    "percentage": pct,
+                    "remaining": remaining,
+                    "is_overspent": spent > limit,
+                    "is_warning": 80.0 <= pct <= 100.0,
+                }
+            )
+        return sorted(results, key=lambda x: x["percentage"], reverse=True)
+
+    # --- RECURRING BILLS (HUMAN IN THE LOOP) ---
+
+    async def add_recurring_bill(
+        self, name: str, amount: float, category: str, day_of_month: int
+    ) -> int:
+        """Add a recurring bill reminder definition (No auto-deductions)."""
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO recurring_bills (name, amount, category, day_of_month, is_active)
+                VALUES (?, ?, ?, ?, 1)
+                """,
+                (name, round(amount, 2), category, day_of_month),
+            )
+            await conn.commit()
+            return cur.lastrowid
+
+    async def get_due_recurring_bills(self, day_of_month: int) -> List[Dict[str, Any]]:
+        """Fetch active recurring bills due on the specified day of the month."""
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM recurring_bills WHERE day_of_month = ? AND is_active = 1",
+                (day_of_month,),
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    async def list_recurring_bills(self) -> List[Dict[str, Any]]:
+        """List all active recurring bills."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM recurring_bills WHERE is_active = 1 ORDER BY day_of_month ASC") as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    # --- SUMMARIES & DATA EXPORT ---
+
     async def get_daily_summary(
         self, target_date_str: str
     ) -> Tuple[List[Dict[str, Any]], float, List[Dict[str, Any]]]:
@@ -385,26 +511,6 @@ class DatabaseManager:
 
         open_tasks = await self.get_open_tasks()
         return expenses, round(total_spent, 2), open_tasks
-
-    async def get_full_snapshot(
-        self,
-        start_date_str: Optional[str] = None,
-        end_date_str: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Fetch a complete financial and task snapshot for a given date or range."""
-        expenses, total_spent, breakdown = await self.get_expenses_summary(
-            start_date_str, end_date_str
-        )
-        open_tasks = await self.get_open_tasks()
-        completed_tasks = await self.get_completed_tasks(start_date_str if start_date_str == end_date_str else None)
-
-        return {
-            "expenses": expenses,
-            "total_spent": total_spent,
-            "category_breakdown": breakdown,
-            "open_tasks": open_tasks,
-            "completed_tasks": completed_tasks,
-        }
 
     async def get_expenses_summary(
         self,
@@ -444,3 +550,45 @@ class DatabaseManager:
             )
 
         return expenses, total_spent, category_breakdown
+
+    async def get_full_snapshot(
+        self,
+        start_date_str: Optional[str] = None,
+        end_date_str: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch a complete financial and task snapshot for a given date or range."""
+        expenses, total_spent, breakdown = await self.get_expenses_summary(
+            start_date_str, end_date_str
+        )
+        open_tasks = await self.get_open_tasks()
+        completed_tasks = await self.get_completed_tasks(start_date_str if start_date_str == end_date_str else None)
+
+        return {
+            "expenses": expenses,
+            "total_spent": total_spent,
+            "category_breakdown": breakdown,
+            "open_tasks": open_tasks,
+            "completed_tasks": completed_tasks,
+        }
+
+    async def generate_csv_data(
+        self,
+        start_date_str: Optional[str] = None,
+        end_date_str: Optional[str] = None,
+    ) -> str:
+        """Generate a clean RFC-4180 CSV string of expenses."""
+        expenses, _, _ = await self.get_expenses_summary(start_date_str, end_date_str)
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Expense ID", "Date", "Category", "Amount (MYR)", "Note"])
+        for e in expenses:
+            writer.writerow(
+                [
+                    e["id"],
+                    e["created_at"],
+                    e["category"],
+                    f"{e['amount']:.2f}",
+                    e.get("note") or "",
+                ]
+            )
+        return output.getvalue()

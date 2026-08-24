@@ -4,6 +4,19 @@ import discord
 from src.extractor import ExtractedPayload, QueryScope
 
 
+def render_progress_bar(current: float, limit: float, width: int = 10) -> str:
+    """Render a visual Unicode progress bar."""
+    if limit <= 0:
+        return "[░░░░░░░░░░] (No limit)"
+    ratio = min(max(current / limit, 0.0), 1.0)
+    filled = int(round(ratio * width))
+    empty = width - filled
+    bar = "█" * filled + "░" * empty
+    pct = round((current / limit) * 100, 1)
+    status_emoji = " ⚠️" if 80.0 <= pct <= 100.0 else (" 🚨 OVERSPENT" if pct > 100.0 else "")
+    return f"`[{bar}]` **RM {current:.2f} / RM {limit:.2f}** ({pct}%){status_emoji}"
+
+
 def format_action_preview(
     payload: ExtractedPayload,
     expenses: List[Dict[str, Any]],
@@ -80,8 +93,9 @@ def format_action_confirmation(
     inserted_expenses: List[Dict[str, Any]],
     inserted_tasks: List[Dict[str, Any]],
     completed_tasks: List[Dict[str, Any]],
+    budget_alerts: Optional[List[str]] = None,
 ) -> discord.Embed:
-    """Build a rich confirmation embed for logged actions with hierarchy for multi-phase tasks."""
+    """Build a rich confirmation embed for logged actions with hierarchy and budget alerts."""
     embed = discord.Embed(
         title="⚡ Action Processed",
         color=discord.Color.green(),
@@ -100,7 +114,15 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 2. New Tasks (Parent & Phases)
+    # 2. Budget Alerts
+    if budget_alerts:
+        embed.add_field(
+            name="⚠️ Budget Alert",
+            value="\n".join(budget_alerts),
+            inline=False,
+        )
+
+    # 3. New Tasks (Parent & Phases)
     if inserted_tasks:
         lines = []
         for t in inserted_tasks:
@@ -111,7 +133,6 @@ def format_action_confirmation(
                 due_parts.append(t["due_time"])
             due_str = f" _(Due: {' '.join(due_parts)})_" if due_parts else ""
 
-            # Check if this task has subphases
             subphases = t.get("subphases", [])
             if subphases:
                 lines.append(f"• 📁 `[{t['priority']}]` **{t['description']}**{due_str} `[ID: #{t['id']}]`")
@@ -127,7 +148,7 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 3. Completed Tasks
+    # 4. Completed Tasks
     if completed_tasks:
         lines = []
         for t in completed_tasks:
@@ -139,17 +160,79 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 4. Ambiguity / Clarification
-    if payload.ambiguous_task_note:
-        embed.add_field(
-            name="⚠️ Clarification Required",
-            value=payload.ambiguous_task_note,
-            inline=False,
-        )
-
     # 5. Conversational Reply fallback
     if payload.conversational_reply and not inserted_expenses and not inserted_tasks and not completed_tasks and not payload.ambiguous_task_note:
         embed.description = payload.conversational_reply
+
+    return embed
+
+
+def format_morning_briefing(
+    open_tasks: List[Dict[str, Any]],
+    due_bills: List[Dict[str, Any]],
+    budget_status: List[Dict[str, Any]],
+    date_str: str,
+) -> discord.Embed:
+    """Build a sharp morning kickoff embed at 08:30."""
+    embed = discord.Embed(
+        title=f"☀️ Morning Briefing — {date_str}",
+        description="Here is your focus and financial outlook for today. Have a productive day!",
+        color=discord.Color.orange(),
+    )
+
+    # 1. High Priority & Open Tasks
+    if open_tasks:
+        lines = []
+        high_prio = [t for t in open_tasks if t.get("priority") == "HIGH"]
+        other_tasks = [t for t in open_tasks if t.get("priority") != "HIGH"]
+
+        if high_prio:
+            lines.append("**🔥 High Priority Focus:**")
+            for t in high_prio:
+                due = f" _(Due: {t['due_date']})_" if t.get("due_date") else ""
+                lines.append(f"• `[#{t['id']}]` {t['description']}{due}")
+            lines.append("")
+
+        if other_tasks:
+            lines.append("**📋 Other Active Tasks:**")
+            for t in other_tasks[:8]:
+                lines.append(f"• `[#{t['id']} | {t['priority']}]` {t['description']}")
+
+        embed.add_field(
+            name=f"🎯 Tasks to Tackle ({len(open_tasks)})",
+            value="\n".join(lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="🎯 Tasks",
+            value="🎉 No open tasks! You're completely clear.",
+            inline=False,
+        )
+
+    # 2. Due Recurring Bills (Human-in-the-loop reminder)
+    if due_bills:
+        bill_lines = []
+        for b in due_bills:
+            bill_lines.append(f"• **{b['name']}:** RM {b['amount']:.2f} (`{b['category']}`)")
+        bill_lines.append("\n💡 _Reply `Logged <Bill>` or `Spent RM <amount>` when paid._")
+        embed.add_field(
+            name=f"🔔 Recurring Bills Due Today ({len(due_bills)})",
+            value="\n".join(bill_lines),
+            inline=False,
+        )
+
+    # 3. Monthly Budget Health
+    if budget_status:
+        b_lines = []
+        for b in budget_status[:5]:
+            bar = render_progress_bar(b["spent"], b["limit"])
+            b_lines.append(f"• **{b['category']}:**\n  {bar}")
+        embed.add_field(
+            name="📊 Monthly Budget Overview",
+            value="\n".join(b_lines),
+            inline=False,
+        )
 
     return embed
 
@@ -160,7 +243,7 @@ def format_daily_summary(
     open_tasks: List[Dict[str, Any]],
     date_str: str,
 ) -> discord.Embed:
-    """Build a rich embed for the automated daily summary."""
+    """Build a rich embed for the automated daily summary at 22:00."""
     embed = discord.Embed(
         title=f"📊 Daily Summary — {date_str}",
         color=discord.Color.gold(),
@@ -213,8 +296,9 @@ def format_full_snapshot_summary(
     snapshot: Dict[str, Any],
     timeframe_title: str,
     ai_digest: Optional[str] = None,
+    budget_status: Optional[List[Dict[str, Any]]] = None,
 ) -> discord.Embed:
-    """Build a comprehensive on-demand summary embed with financial and productivity stats."""
+    """Build a comprehensive on-demand summary embed with financial, task, and budget stats."""
     embed = discord.Embed(
         title=f"📊 Executive Summary ({timeframe_title})",
         color=discord.Color.blue(),
@@ -240,7 +324,19 @@ def format_full_snapshot_summary(
             inline=False,
         )
 
-    # 2. Accomplished Tasks
+    # 2. Budget Utilization
+    if budget_status:
+        b_lines = []
+        for b in budget_status:
+            bar = render_progress_bar(b["spent"], b["limit"])
+            b_lines.append(f"• **{b['category']}:**\n  {bar}")
+        embed.add_field(
+            name="📈 Budget Health",
+            value="\n".join(b_lines),
+            inline=False,
+        )
+
+    # 3. Accomplished Tasks
     completed = snapshot.get("completed_tasks", [])
     if completed:
         lines = [f"• ~~`[#{t['id']}]` {t['description']}~~" for t in completed]
@@ -250,7 +346,7 @@ def format_full_snapshot_summary(
             inline=False,
         )
 
-    # 3. Pending Open Tasks
+    # 4. Pending Open Tasks
     open_tasks = snapshot.get("open_tasks", [])
     if open_tasks:
         lines = []
@@ -271,6 +367,26 @@ def format_full_snapshot_summary(
             inline=False,
         )
 
+    return embed
+
+
+def format_budget_overview(budget_status: List[Dict[str, Any]]) -> discord.Embed:
+    """Build a dedicated budget status embed."""
+    embed = discord.Embed(
+        title="📊 Monthly Budget Overview",
+        color=discord.Color.teal(),
+    )
+    if not budget_status:
+        embed.description = "No category budgets configured yet. Set one anytime by saying e.g. *'Set monthly food budget to RM 800'*!"
+        return embed
+
+    lines = []
+    for b in budget_status:
+        bar = render_progress_bar(b["spent"], b["limit"])
+        rem_str = f"RM {b['remaining']:.2f} left" if b['remaining'] >= 0 else f"RM {abs(b['remaining']):.2f} OVER"
+        lines.append(f"• **{b['category']}** ({rem_str}):\n  {bar}\n")
+
+    embed.description = "\n".join(lines)
     return embed
 
 
@@ -331,52 +447,56 @@ def format_help_guide() -> discord.Embed:
     """Build a comprehensive guide embed showing how to interact with the bot."""
     embed = discord.Embed(
         title="📖 Perlica Personal Agent — Quick Start Guide",
-        description="Just send natural sentences directly in this DM! Every addition comes with an interactive **Confirm / Edit / Reject** preview.",
+        description="Just send natural sentences or voice notes directly in this DM! Every addition comes with an interactive **Confirm / Edit / Reject** preview.",
         color=discord.Color.teal(),
     )
 
     embed.add_field(
-        name="💸 Logging Expenses",
+        name="💸 Logging Expenses & Voice Notes",
         value=(
             "• `RM 15.50 chicken rice for lunch`\n"
-            "• `Spent 45 on petrol and 12 on toll`\n"
-            "• `Yesterday paid RM 80 for electricity bill`"
+            "• `Reload TNG RM 50` / `99 Speedmart RM 28`\n"
+            "• `Genshin Welkin moon RM 24.90`\n"
+            "• 🎙️ *Send a voice note while driving!*"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="📝 Creating Single & Multi-Phase Tasks",
+        name="📊 Budget Limits & Progress Bars",
         value=(
-            "• `Remind me to submit client invoice tomorrow 5pm`\n"
-            "• `Create task 'App Redesign' with 3 phases: 1. Wireframes, 2. UI Design, 3. Testing`\n"
-            "• `Prepare presentation slides next Monday`"
+            "• `Set monthly food budget to RM 800`\n"
+            "• `Set monthly entertainment budget to RM 200`\n"
+            "• `Check my budget status`"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="⚡ Compound Multi-Actions",
-        value="• `Spent RM 25 on Grab and finished Phase 1 of App Redesign`\n*(Logs expense + marks sub-phase as DONE in 1 text!)*",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="📊 Immediate Summaries & Insights",
+        name="🔔 Recurring Bills & Morning Briefing",
         value=(
-            "• `Summarize today` or `Recap my day`\n"
-            "• `How much did I spend this week?`\n"
-            "• `What are my open tasks?`\n"
-            "• `Give me advice on my budget`"
+            "• `Add recurring bill: Unifi RM 139 on the 1st`\n"
+            "• `Add recurring bill: Netflix RM 55 on the 15th`\n"
+            "• ☀️ *Morning Briefing arrives at 8:30 AM with reminders!*"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="↩️ 3-Button Ingestion & Undo",
+        name="📝 Multi-Phase Tasks & Completions",
         value=(
-            "• Every logged item shows `[✅ Confirm]` `[✏️ Edit]` `[❌ Reject]`\n"
-            "• Type `undo` anytime to reverse the last change."
+            "• `Create task 'App Launch' with 3 phases: 1. Wireframes, 2. Design, 3. Testing`\n"
+            "• `Done task #1` or `Finished phase 1 of App Launch`\n"
+            "• `What are my open tasks?`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📄 CSV Export & Undo",
+        value=(
+            "• `Export this month's expenses` *(Instant .csv download)*\n"
+            "• `undo` *(Reverse the last entry)*"
         ),
         inline=False,
     )

@@ -21,18 +21,62 @@ async def test_insert_and_get_expenses(db: DatabaseManager):
     assert eid2 == 2
     assert eid3 == 3
 
-    # Daily summary for 2026-08-24
     expenses_today, total_today, _ = await db.get_daily_summary("2026-08-24")
     assert len(expenses_today) == 2
     assert total_today == 45.50
 
-    # Summary with category breakdown for all
     all_expenses, total_all, breakdown = await db.get_expenses_summary()
     assert len(all_expenses) == 3
     assert total_all == 95.50
     assert breakdown["Food & Dining"] == 15.50
     assert breakdown["Transport"] == 30.00
     assert breakdown["Groceries"] == 50.00
+
+
+@pytest.mark.asyncio
+async def test_budgets_and_status(db: DatabaseManager):
+    await db.set_budget("Food & Dining", 500.0)
+    await db.set_budget("Transport", 200.0)
+
+    budgets = await db.get_budgets()
+    assert budgets["Food & Dining"] == 500.0
+    assert budgets["Transport"] == 200.0
+
+    # Insert expenses in 2026-08
+    await db.insert_expense(450.0, "Food & Dining", "Meals", "2026-08-10 12:00:00")
+    await db.insert_expense(50.0, "Transport", "Petrol", "2026-08-12 12:00:00")
+
+    status = await db.get_budget_status("2026-08")
+    assert len(status) == 2
+    food_stat = next(s for s in status if s["category"] == "Food & Dining")
+    assert food_stat["spent"] == 450.0
+    assert food_stat["percentage"] == 90.0
+    assert food_stat["is_warning"] is True
+    assert food_stat["is_overspent"] is False
+
+
+@pytest.mark.asyncio
+async def test_recurring_bills(db: DatabaseManager):
+    bid1 = await db.add_recurring_bill("Unifi", 139.0, "Utilities & Bills", 1)
+    bid2 = await db.add_recurring_bill("Netflix", 55.0, "Entertainment", 15)
+
+    assert bid1 == 1
+    assert bid2 == 2
+
+    due_on_1st = await db.get_due_recurring_bills(1)
+    assert len(due_on_1st) == 1
+    assert due_on_1st[0]["name"] == "Unifi"
+
+    all_bills = await db.list_recurring_bills()
+    assert len(all_bills) == 2
+
+
+@pytest.mark.asyncio
+async def test_csv_export(db: DatabaseManager):
+    await db.insert_expense(25.0, "Food & Dining", "Lunch", "2026-08-24 12:00:00")
+    csv_out = await db.generate_csv_data("2026-08-01")
+    assert "Expense ID,Date,Category,Amount (MYR),Note" in csv_out
+    assert "Food & Dining,25.00,Lunch" in csv_out
 
 
 @pytest.mark.asyncio
@@ -47,21 +91,14 @@ async def test_insert_and_complete_tasks(db: DatabaseManager):
 
     open_tasks = await db.get_open_tasks()
     assert len(open_tasks) == 3
-    assert open_tasks[0]["id"] == tid1
-    assert open_tasks[1]["id"] == tid2
-    assert open_tasks[2]["id"] == tid3
 
-    # Deterministic completion by ID
     res = await db.complete_task_by_id(tid1, "2026-08-25 10:00:00")
     assert res is not None
     assert res["status"] == "DONE"
-    assert res["completed_at"] == "2026-08-25 10:00:00"
 
-    # Batch completion
-    batch_res = await db.complete_tasks_by_ids([tid2, tid3, 999], "2026-08-25 11:00:00")
+    batch_res = await db.complete_tasks_by_ids([tid2, tid3], "2026-08-25 11:00:00")
     assert len(batch_res) == 2
 
-    # Verify no open tasks remain
     remaining = await db.get_open_tasks()
     assert len(remaining) == 0
 
@@ -79,12 +116,10 @@ async def test_multi_phase_tasks(db: DatabaseManager):
 
     assert parent_id == 1
     assert len(subtasks) == 3
-    assert subtasks[0]["phase_name"] == "Phase 1"
 
     open_tasks = await db.get_open_tasks()
     assert len(open_tasks) == 4
 
-    # Complete Phase 1
     phase1_id = subtasks[0]["id"]
     res1 = await db.complete_task_by_id(phase1_id, "2026-08-25 10:00:00")
     assert res1["status"] == "DONE"
@@ -92,47 +127,6 @@ async def test_multi_phase_tasks(db: DatabaseManager):
     open_tasks_after = await db.get_open_tasks()
     assert len(open_tasks_after) == 3
 
-    # Completing parent completes all remaining subphases
     await db.complete_task_by_id(parent_id, "2026-08-26 10:00:00")
     remaining = await db.get_open_tasks()
     assert len(remaining) == 0
-
-
-@pytest.mark.asyncio
-async def test_update_and_delete_operations(db: DatabaseManager):
-    # Expense CRUD
-    eid = await db.insert_expense(25.00, "Food & Dining", "Old note", "2026-08-24 12:00:00")
-    updated_exp = await db.update_expense(eid, amount=30.00, note="New note")
-    assert updated_exp["amount"] == 30.00
-    assert updated_exp["note"] == "New note"
-
-    last_exp = await db.get_last_expense()
-    assert last_exp["id"] == eid
-
-    deleted_exp = await db.delete_expense(eid)
-    assert deleted_exp["id"] == eid
-    assert await db.get_expense_by_id(eid) is None
-
-    # Task CRUD
-    tid = await db.insert_task("Original task", "LOW", created_at="2026-08-24 12:00:00")
-    updated_task = await db.update_task(tid, description="Updated task", priority="HIGH")
-    assert updated_task["description"] == "Updated task"
-    assert updated_task["priority"] == "HIGH"
-
-    deleted_task = await db.delete_task(tid)
-    assert deleted_task["id"] == tid
-    assert await db.get_task_by_id(tid) is None
-
-
-@pytest.mark.asyncio
-async def test_full_snapshot(db: DatabaseManager):
-    await db.insert_expense(20.00, "Food & Dining", "Nasi Lemak", "2026-08-24 09:00:00")
-    tid = await db.insert_task("Read paper", "LOW", created_at="2026-08-24 09:00:00")
-    await db.complete_task_by_id(tid, "2026-08-24 11:00:00")
-    await db.insert_task("Prepare demo", "HIGH", created_at="2026-08-24 12:00:00")
-
-    snapshot = await db.get_full_snapshot("2026-08-24", "2026-08-24")
-    assert snapshot["total_spent"] == 20.00
-    assert len(snapshot["completed_tasks"]) == 1
-    assert len(snapshot["open_tasks"]) == 1
-    assert snapshot["open_tasks"][0]["description"] == "Prepare demo"

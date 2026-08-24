@@ -1,3 +1,4 @@
+import io
 import logging
 import datetime
 from typing import Optional, List, Dict, Any, Callable
@@ -12,7 +13,9 @@ from src.formatters import (
     format_action_preview,
     format_action_confirmation,
     format_daily_summary,
+    format_morning_briefing,
     format_full_snapshot_summary,
+    format_budget_overview,
     format_query_results,
     format_help_guide,
 )
@@ -40,14 +43,14 @@ class ActionIngestionView(discord.ui.View):
         on_confirm: Callable[[discord.Interaction], Any],
         on_edit: Callable[[discord.Interaction], Any],
         on_reject: Callable[[discord.Interaction], Any],
-        timeout: float = 120.0,
+        timeout: float = 180.0,
     ):
         super().__init__(timeout=timeout)
         self.on_confirm = on_confirm
         self.on_edit = on_edit
         self.on_reject = on_reject
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅", custom_id="btn_confirm_ingest")
     async def confirm_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -55,7 +58,7 @@ class ActionIngestionView(discord.ui.View):
             child.disabled = True
         await self.on_confirm(interaction)
 
-    @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary, emoji="✏️")
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id="btn_edit_ingest")
     async def edit_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -63,7 +66,7 @@ class ActionIngestionView(discord.ui.View):
             child.disabled = True
         await self.on_edit(interaction)
 
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌")
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌", custom_id="btn_reject_ingest")
     async def reject_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -79,13 +82,13 @@ class ConfirmActionView(discord.ui.View):
         self,
         on_confirm: Callable[[discord.Interaction], Any],
         on_cancel: Optional[Callable[[discord.Interaction], Any]] = None,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
     ):
         super().__init__(timeout=timeout)
         self.on_confirm = on_confirm
         self.on_cancel = on_cancel
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅", custom_id="btn_confirm_action")
     async def confirm_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -93,7 +96,7 @@ class ConfirmActionView(discord.ui.View):
             child.disabled = True
         await self.on_confirm(interaction)
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌")
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌", custom_id="btn_cancel_action")
     async def cancel_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
@@ -119,24 +122,53 @@ async def on_ready():
             f"Daily summary loop scheduled at {settings.DAILY_SUMMARY_TIME} ({settings.TIMEZONE})."
         )
 
+    if not morning_briefing_loop.is_running():
+        morning_briefing_loop.start()
+        logger.info(
+            f"Morning briefing loop scheduled at {settings.MORNING_BRIEFING_TIME} ({settings.TIMEZONE})."
+        )
 
-hour, minute = settings.summary_hour_minute
-summary_time = datetime.time(hour=hour, minute=minute, tzinfo=settings.tz)
+
+summary_h, summary_m = settings.summary_hour_minute
+summary_time = datetime.time(hour=summary_h, minute=summary_m, tzinfo=settings.tz)
+
+morning_h, morning_m = settings.morning_hour_minute
+morning_time = datetime.time(hour=morning_h, minute=morning_m, tzinfo=settings.tz)
+
+
+@tasks.loop(time=morning_time)
+async def morning_briefing_loop():
+    """Background scheduled job dispatching morning briefing at 08:30 via DM."""
+    target_user = None
+    if settings.ALLOWED_USER_ID:
+        target_user = bot.get_user(settings.ALLOWED_USER_ID) or await bot.fetch_user(settings.ALLOWED_USER_ID)
+
+    if not target_user:
+        return
+
+    now_local = datetime.datetime.now(settings.tz)
+    today_str = now_local.strftime("%Y-%m-%d")
+    month_str = now_local.strftime("%Y-%m")
+    day_of_month = now_local.day
+
+    open_tasks = await db.get_open_tasks()
+    due_bills = await db.get_due_recurring_bills(day_of_month)
+    budget_status = await db.get_budget_status(month_str)
+
+    embed = format_morning_briefing(open_tasks, due_bills, budget_status, today_str)
+    try:
+        await target_user.send(embed=embed)
+        logger.info(f"Dispatched morning briefing DM for {today_str}.")
+    except Exception as e:
+        logger.error(f"Failed to send morning briefing DM: {e}")
 
 
 @tasks.loop(time=summary_time)
 async def daily_summary_loop():
     """Background scheduled job dispatching daily spending and task summaries via DM."""
     target_user = None
-
     if settings.ALLOWED_USER_ID:
-        target_user = bot.get_user(settings.ALLOWED_USER_ID)
-        if not target_user:
-            try:
-                target_user = await bot.fetch_user(settings.ALLOWED_USER_ID)
-            except Exception as e:
-                logger.error(f"Failed to fetch user {settings.ALLOWED_USER_ID} for DM summary: {e}")
-                return
+        target_user = bot.get_user(settings.ALLOWED_USER_ID) or await bot.fetch_user(settings.ALLOWED_USER_ID)
 
     now_local = datetime.datetime.now(settings.tz)
     today_str = now_local.strftime("%Y-%m-%d")
@@ -153,15 +185,13 @@ async def daily_summary_loop():
             if channel:
                 await channel.send(embed=embed)
                 logger.info(f"Dispatched daily summary to channel for {today_str}.")
-        else:
-            logger.warning("No ALLOWED_USER_ID or DISCORD_CHANNEL_ID configured for daily summary dispatch.")
     except Exception as e:
         logger.error(f"Failed to send daily summary embed: {e}")
 
 
 @bot.event
 async def on_message(message: discord.Message):
-    # FR-1.2: Ignore bot messages
+    # Ignore bot messages
     if message.author.bot or message.author.id == bot.user.id:
         return
 
@@ -174,6 +204,20 @@ async def on_message(message: discord.Message):
         return
 
     content = message.content.strip()
+
+    # 1. Voice Note / Audio Transcription (Groq Whisper)
+    if message.attachments:
+        for att in message.attachments:
+            if any(att.filename.lower().endswith(ext) for ext in [".ogg", ".mp3", ".m4a", ".wav", ".webm"]):
+                async with message.channel.typing():
+                    audio_bytes = await att.read()
+                    transcribed = await extractor.transcribe_audio((att.filename, audio_bytes))
+                    if transcribed:
+                        await message.reply(f"🎙️ *Voice Note Transcribed:* \"{transcribed}\"")
+                        content = f"{content} {transcribed}".strip()
+                    else:
+                        await message.reply("⚠️ Could not transcribe the audio file.")
+
     if not content:
         return
 
@@ -185,6 +229,8 @@ async def on_message(message: discord.Message):
     # Visual feedback: typing indicator in DM
     async with message.channel.typing():
         now_local = datetime.datetime.now(settings.tz)
+        now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+        month_str = now_local.strftime("%Y-%m")
         open_tasks = await db.get_open_tasks()
 
         # Extract structured payload via LLM layer
@@ -194,14 +240,52 @@ async def on_message(message: discord.Message):
             open_tasks=open_tasks,
         )
 
-        now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
-
         # 0. Zero-Assumption Clarification Prompt
         if payload.needs_clarification and payload.clarification_prompt:
             await message.reply(payload.clarification_prompt)
             return
 
-        # 1. UNDO Action with Button Confirmation
+        # 1. CSV Data Export
+        if payload.export_csv:
+            start_month = now_local.strftime("%Y-%m-01")
+            csv_text = await db.generate_csv_data(start_month)
+            csv_file = discord.File(
+                io.BytesIO(csv_text.encode("utf-8")),
+                filename=f"Perlica_Expenses_{month_str}.csv",
+            )
+            await message.reply(
+                content=f"📄 **Here is your expense export for {now_local.strftime('%B %Y')}:**",
+                file=csv_file,
+            )
+            return
+
+        # 2. Budget Configuration
+        if payload.set_budget_category and payload.set_budget_amount is not None:
+            cat = payload.set_budget_category
+            amt = payload.set_budget_amount
+            res = await db.set_budget(cat, amt)
+            status = await db.get_budget_status(month_str)
+            await message.reply(
+                content=f"🎯 **Monthly budget set for `{res['category']}`:** RM {res['monthly_limit']:.2f}",
+                embed=format_budget_overview(status),
+            )
+            return
+
+        # 3. Recurring Bill Addition (Human in the loop reminders only)
+        if payload.add_bill_name and payload.add_bill_amount is not None and payload.add_bill_day:
+            b_name = payload.add_bill_name
+            b_amt = payload.add_bill_amount
+            b_cat = payload.add_bill_category.value if payload.add_bill_category else "Utilities & Bills"
+            b_day = payload.add_bill_day
+
+            await db.add_recurring_bill(b_name, b_amt, b_cat, b_day)
+            await message.reply(
+                f"🔔 **Recurring Bill Saved:** `{b_name}` (RM {b_amt:.2f} — {b_cat}) on the **{b_day}th of every month**.\n"
+                f"*(Perlica will remind you in your Morning Briefing on the {b_day}th, with zero auto-deductions!)*"
+            )
+            return
+
+        # 4. UNDO Action with Button Confirmation
         if payload.undo_intent:
             intent = payload.undo_intent
             last_exp = await db.get_last_expense()
@@ -247,7 +331,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_undo))
             return
 
-        # 2. DELETE Specific Expense / Task with Button Confirmation
+        # 5. DELETE Specific Expense / Task with Button Confirmation
         if payload.delete_expense_id:
             eid = payload.delete_expense_id
             target_exp = await db.get_expense_by_id(eid)
@@ -294,7 +378,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_task))
             return
 
-        # 3. EDIT Expense / Task with Button Confirmation
+        # 6. EDIT Expense / Task with Button Confirmation
         if payload.edit_expense_id:
             eid = payload.edit_expense_id
             target_exp = await db.get_expense_by_id(eid)
@@ -360,7 +444,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_edit_task))
             return
 
-        # 4. REOPEN Task with Button Confirmation
+        # 7. REOPEN Task with Button Confirmation
         if payload.reopen_task_id:
             tid = payload.reopen_task_id
             target_task = await db.get_task_by_id(tid)
@@ -384,7 +468,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_reopen))
             return
 
-        # 5. Pure Conversational / Casual Chat Handling
+        # 8. Pure Conversational / Casual Chat Handling
         has_actions = bool(
             payload.expenses
             or payload.new_tasks
@@ -401,10 +485,25 @@ async def on_message(message: discord.Message):
             await message.reply(reply_text)
             return
 
-        # 6. Query / Immediate Summary / Advice Handling
+        # 9. Query / Immediate Summary / Budget Overview / Advice Handling
         if payload.query:
             q = payload.query
             today_date = now_local.date()
+
+            if q.query_target == "BUDGETS":
+                status = await db.get_budget_status(month_str)
+                await message.reply(embed=format_budget_overview(status))
+                return
+
+            if q.query_target == "BILLS":
+                bills = await db.list_recurring_bills()
+                if bills:
+                    b_lines = [f"• **{b['name']}:** RM {b['amount']:.2f} (`{b['category']}`) due on the **{b['day_of_month']}th**" for b in bills]
+                    embed = discord.Embed(title="🔔 Configured Recurring Bills", description="\n".join(b_lines), color=discord.Color.purple())
+                else:
+                    embed = discord.Embed(title="🔔 Configured Recurring Bills", description="No recurring bills configured yet. Add one with *'Add recurring bill: Netflix RM 55 on the 15th'*.", color=discord.Color.purple())
+                await message.reply(embed=embed)
+                return
 
             if q.timeframe == "TODAY":
                 start_d = today_date.strftime("%Y-%m-%d")
@@ -430,12 +529,13 @@ async def on_message(message: discord.Message):
             # Full Executive Summary Request
             if q.query_target == "SUMMARY":
                 snapshot = await db.get_full_snapshot(start_d, end_d)
+                budget_status = await db.get_budget_status(month_str)
                 ai_digest = await extractor.generate_ai_insight(
                     prompt_topic=f"Executive summary for {title_time}",
                     snapshot_data=snapshot,
                     now_local=now_local,
                 )
-                embed = format_full_snapshot_summary(snapshot, title_time, ai_digest)
+                embed = format_full_snapshot_summary(snapshot, title_time, ai_digest, budget_status)
                 await message.reply(embed=embed)
                 return
 
@@ -464,7 +564,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed)
             return
 
-        # 7. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
+        # 10. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
         expenses_preview = [
             {
                 "amount": exp.amount,
@@ -557,11 +657,22 @@ async def on_message(message: discord.Message):
                     payload.completed_task_ids, completed_at=now_str
                 )
 
+            # Check Budget Utilization & Alerts
+            budget_alerts = []
+            if inserted_expenses:
+                current_budget_status = await db.get_budget_status(month_str)
+                for b in current_budget_status:
+                    if b["is_overspent"]:
+                        budget_alerts.append(f"🚨 **{b['category']}** has exceeded monthly limit! (RM {b['spent']:.2f} / RM {b['limit']:.2f})")
+                    elif b["is_warning"]:
+                        budget_alerts.append(f"⚠️ **{b['category']}** is at {b['percentage']}% of monthly limit (RM {b['remaining']:.2f} left).")
+
             confirmed_embed = format_action_confirmation(
                 payload=payload,
                 inserted_expenses=inserted_expenses,
                 inserted_tasks=inserted_tasks,
                 completed_tasks=completed_tasks_details,
+                budget_alerts=budget_alerts,
             )
             await interaction.response.edit_message(
                 embed=confirmed_embed, view=None

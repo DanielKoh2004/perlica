@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     DATABASE_PATH: str = Field(default="tracker.db", description="Path to SQLite database")
     TIMEZONE: str = Field(default="Asia/Kuala_Lumpur", description="IANA timezone name")
     DAILY_SUMMARY_TIME: str = Field(default="22:00", description="Daily summary dispatch time HH:MM")
+    MORNING_BRIEFING_TIME: str = Field(default="08:30", description="Morning briefing dispatch time HH:MM")
 
     @field_validator("ALLOWED_USER_ID", "DISCORD_CHANNEL_ID", mode="before")
     @classmethod
@@ -53,6 +54,13 @@ class Settings(BaseSettings):
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             return int(parts[0]), int(parts[1])
         return 22, 0
+
+    @property
+    def morning_hour_minute(self) -> tuple[int, int]:
+        parts = self.MORNING_BRIEFING_TIME.split(":")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return int(parts[0]), int(parts[1])
+        return 8, 30
 
 
 settings = Settings()
