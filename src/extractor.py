@@ -248,9 +248,9 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - **Food & Dining**: Mamak, Kopitiam, Hawker, Nasi Kandar, Roti Canai, Teh Tarik, Nasi Lemak, GrabFood, FoodPanda, ShopeeFood, Cafes, Restaurants.
    - **Groceries**: 99 Speedmart, Speedmart, Lotus's, Jaya Grocer, Village Grocer, Aeon, Econsave, Mydin, NSK, Pasar Malam, Wet Market.
    - **Utilities & Bills**: TNB (electricity), Air Selangor / Syabas (water), Indah Water (IWK), Astro, Unifi, TIME, Maxis, CelcomDigi, U Mobile, prepaid/postpaid phone reload.
-   - **Entertainment**: In-game top-ups, monthly cards & passes (Genshin Welkin Moon, Honkai Star Rail Express Pass, MLBB diamonds, Valorant Points, PUBG UC, Roblox Robux, Battle Pass), Gaming stores & reload (Codashop, UniPin, Razer Gold, Steam, PlayStation PSN, Nintendo eShop), Subscriptions (Discord Nitro, Spotify, Netflix, YouTube Premium, Disney+, cinema tickets).
-   - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores, Gadgets, Clothes.
-   - **Health & Personal**: Watsons, Guardian, Caring, Big Pharmacy, Klinik, Hospital, Gym, Haircut.
+   - **Entertainment**: In-game top-ups, monthly cards & passes (e.g. Endfield / Arknights Endfield, Arknights, Genshin Welkin, HSR Express Pass, ZZZ, Wuthering Waves, Blue Archive, Nikke, FGO, MLBB diamonds, Valorant Points, Roblox Robux, Battle Pass, Season Pass), Gaming stores & platforms (Codashop, UniPin, Razer Gold, Steam, PlayStation PSN, Nintendo eShop, Epic Games), Subscriptions (Discord Nitro, Spotify, Netflix, YouTube Premium, Disney+, cinema tickets, board games).
+   - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores, Gadgets, Clothes, Physical goods.
+   - **Health & Personal**: Medical/Doctor/Clinic/Klinik/Hospital, Pharmacy (Watsons, Guardian, Caring, Big Pharmacy), Vitamins/Supplements, Skincare, Haircut, Grooming, Gym membership. (Note: In-game passes or monthly cards are NEVER Health & Personal).
 
 2. ZERO-ASSUMPTION POLICY (NEEDS CLARIFICATION):
    - If the user provides an expense amount without ANY item, vendor, or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport / TNG, Shopping, Utilities)?", and leave expenses=[].
