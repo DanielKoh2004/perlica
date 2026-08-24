@@ -66,19 +66,13 @@ def clean_float_input(val_str: Optional[str], default: float = 0.0) -> float:
 # --- NATIVE DISCORD POPUP EDIT MODALS ---
 
 class ExpenseEditModal(discord.ui.Modal, title="✏️ Edit Expense Entry"):
-    """Popup form modal to modify detected expense before confirming."""
+    """Popup form modal with native Category Select dropdown."""
 
     amount_input = discord.ui.TextInput(
         label="Amount (RM / Number)",
         placeholder="e.g. 15.50",
         required=True,
         max_length=20,
-    )
-    category_input = discord.ui.TextInput(
-        label="Category (e.g. Food, Transport, Shopping)",
-        placeholder="Food & Dining, Transport, Groceries, etc.",
-        required=True,
-        max_length=50,
     )
     note_input = discord.ui.TextInput(
         label="Description / Vendor Note",
@@ -92,15 +86,28 @@ class ExpenseEditModal(discord.ui.Modal, title="✏️ Edit Expense Entry"):
         self.payload = payload
         self.parent_view = parent_view
 
+        current_category = ExpenseCategory.OTHER
         if payload.expenses:
             exp = payload.expenses[0]
             self.amount_input.default = f"{exp.amount:.2f}"
-            self.category_input.default = exp.category.value if hasattr(exp.category, "value") else str(exp.category)
             self.note_input.default = exp.note or ""
+            current_category = exp.category if isinstance(exp.category, ExpenseCategory) else resolve_category_from_text(str(exp.category))
+
+        self.category_select = discord.ui.Select(
+            placeholder="Select Expense Category...",
+            options=[
+                discord.SelectOption(label=cat.value, value=cat.value, default=(cat == current_category))
+                for cat in ExpenseCategory
+            ],
+            min_values=1,
+            max_values=1,
+        )
+        self.add_item(self.category_select)
 
     async def on_submit(self, interaction: discord.Interaction):
         amt = clean_float_input(self.amount_input.value, default=0.0)
-        cat = resolve_category_from_text(self.category_input.value)
+        selected_cat_str = self.category_select.values[0] if self.category_select.values else ExpenseCategory.OTHER.value
+        cat = resolve_category_from_text(selected_cat_str)
         note = self.note_input.value.strip() or None
 
         if self.payload.expenses:
@@ -144,19 +151,13 @@ class ExpenseEditModal(discord.ui.Modal, title="✏️ Edit Expense Entry"):
 
 
 class TaskEditModal(discord.ui.Modal, title="✏️ Edit Task Entry"):
-    """Popup form modal to modify detected task before confirming."""
+    """Popup form modal with native Priority Select dropdown."""
 
     desc_input = discord.ui.TextInput(
         label="Task Description",
         placeholder="e.g. Finish research paper",
         required=True,
         max_length=200,
-    )
-    priority_input = discord.ui.TextInput(
-        label="Priority (LOW, MEDIUM, HIGH)",
-        placeholder="LOW, MEDIUM, or HIGH",
-        required=False,
-        max_length=10,
     )
     due_date_input = discord.ui.TextInput(
         label="Due Date (YYYY-MM-DD)",
@@ -170,15 +171,32 @@ class TaskEditModal(discord.ui.Modal, title="✏️ Edit Task Entry"):
         self.payload = payload
         self.parent_view = parent_view
 
+        current_prio = TaskPriority.MEDIUM
         if payload.new_tasks:
             t = payload.new_tasks[0]
             self.desc_input.default = t.description
-            self.priority_input.default = t.priority.value if hasattr(t.priority, "value") else str(t.priority)
             self.due_date_input.default = t.due_date or ""
+            current_prio = t.priority if isinstance(t.priority, TaskPriority) else (
+                TaskPriority.HIGH if str(t.priority).upper() == "HIGH" else (
+                    TaskPriority.LOW if str(t.priority).upper() == "LOW" else TaskPriority.MEDIUM
+                )
+            )
+
+        self.priority_select = discord.ui.Select(
+            placeholder="Select Priority Level...",
+            options=[
+                discord.SelectOption(label="HIGH Priority 🔴", value="HIGH", default=(current_prio == TaskPriority.HIGH)),
+                discord.SelectOption(label="MEDIUM Priority 🟡", value="MEDIUM", default=(current_prio == TaskPriority.MEDIUM)),
+                discord.SelectOption(label="LOW Priority 🟢", value="LOW", default=(current_prio == TaskPriority.LOW)),
+            ],
+            min_values=1,
+            max_values=1,
+        )
+        self.add_item(self.priority_select)
 
     async def on_submit(self, interaction: discord.Interaction):
         desc = self.desc_input.value.strip()
-        prio_str = self.priority_input.value.strip().upper()
+        prio_str = self.priority_select.values[0] if self.priority_select.values else "MEDIUM"
         prio = TaskPriority.HIGH if prio_str == "HIGH" else (TaskPriority.LOW if prio_str == "LOW" else TaskPriority.MEDIUM)
         due = self.due_date_input.value.strip() or None
 
@@ -223,7 +241,7 @@ class TaskEditModal(discord.ui.Modal, title="✏️ Edit Task Entry"):
 
 
 class BillEditModal(discord.ui.Modal, title="✏️ Edit Recurring Bill"):
-    """Popup form modal to modify recurring bill before confirming."""
+    """Popup form modal with native Category Select dropdown for Recurring Bills."""
 
     name_input = discord.ui.TextInput(
         label="Bill / Investment Name",
@@ -236,12 +254,6 @@ class BillEditModal(discord.ui.Modal, title="✏️ Edit Recurring Bill"):
         placeholder="e.g. 100.00",
         required=True,
         max_length=20,
-    )
-    category_input = discord.ui.TextInput(
-        label="Category",
-        placeholder="Utilities & Bills, Investments & Savings, etc.",
-        required=False,
-        max_length=50,
     )
     day_input = discord.ui.TextInput(
         label="Day of Month (1-31)",
@@ -257,13 +269,28 @@ class BillEditModal(discord.ui.Modal, title="✏️ Edit Recurring Bill"):
 
         self.name_input.default = payload.add_bill_name or ""
         self.amount_input.default = f"{payload.add_bill_amount:.2f}" if payload.add_bill_amount is not None else ""
-        self.category_input.default = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
         self.day_input.default = str(payload.add_bill_day or 1)
+
+        current_category = payload.add_bill_category if isinstance(payload.add_bill_category, ExpenseCategory) else (
+            resolve_category_from_text(str(payload.add_bill_category)) if payload.add_bill_category else ExpenseCategory.INVESTMENT
+        )
+
+        self.category_select = discord.ui.Select(
+            placeholder="Select Bill Category...",
+            options=[
+                discord.SelectOption(label=cat.value, value=cat.value, default=(cat == current_category))
+                for cat in ExpenseCategory
+            ],
+            min_values=1,
+            max_values=1,
+        )
+        self.add_item(self.category_select)
 
     async def on_submit(self, interaction: discord.Interaction):
         self.payload.add_bill_name = self.name_input.value.strip()
         self.payload.add_bill_amount = clean_float_input(self.amount_input.value, default=0.0)
-        self.payload.add_bill_category = resolve_category_from_text(self.category_input.value)
+        selected_cat_str = self.category_select.values[0] if self.category_select.values else ExpenseCategory.INVESTMENT.value
+        self.payload.add_bill_category = resolve_category_from_text(selected_cat_str)
         try:
             self.payload.add_bill_day = max(1, min(31, int(self.day_input.value.strip())))
         except ValueError:
