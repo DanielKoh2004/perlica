@@ -9,6 +9,7 @@ from src.config import settings
 from src.database import DatabaseManager
 from src.extractor import ExtractionEngine, ExtractedPayload
 from src.formatters import (
+    format_action_preview,
     format_action_confirmation,
     format_daily_summary,
     format_full_snapshot_summary,
@@ -31,8 +32,48 @@ db = DatabaseManager(settings.DATABASE_PATH)
 extractor = ExtractionEngine(settings.GROQ_API_KEY, settings.GROQ_MODEL)
 
 
+class ActionIngestionView(discord.ui.View):
+    """3-button interactive view: Confirm, Edit, or Reject new entries."""
+
+    def __init__(
+        self,
+        on_confirm: Callable[[discord.Interaction], Any],
+        on_edit: Callable[[discord.Interaction], Any],
+        on_reject: Callable[[discord.Interaction], Any],
+        timeout: float = 120.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.on_confirm = on_confirm
+        self.on_edit = on_edit
+        self.on_reject = on_reject
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    async def confirm_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        for child in self.children:
+            child.disabled = True
+        await self.on_confirm(interaction)
+
+    @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary, emoji="✏️")
+    async def edit_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        for child in self.children:
+            child.disabled = True
+        await self.on_edit(interaction)
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌")
+    async def reject_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        for child in self.children:
+            child.disabled = True
+        await self.on_reject(interaction)
+
+
 class ConfirmActionView(discord.ui.View):
-    """Interactive Discord confirmation buttons for destructive or modifying actions."""
+    """2-button interactive confirmation view for undo, delete, and reopen."""
 
     def __init__(
         self,
@@ -166,7 +207,6 @@ async def on_message(message: discord.Message):
             last_exp = await db.get_last_expense()
             last_task = await db.get_last_task()
 
-            # Determine what to undo
             target_type = None
             target_item = None
             if intent in ("EXPENSE", "LAST") and last_exp:
@@ -424,86 +464,138 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed)
             return
 
-        # 7. Action Ingestion (Expenses, Single/Multi-Phase Tasks, Completions)
-        inserted_expenses: List[Dict[str, Any]] = []
-        for exp in payload.expenses:
-            created_at = (
-                f"{exp.occurred_date} 12:00:00" if exp.occurred_date else now_str
-            )
-            eid = await db.insert_expense(
-                amount=exp.amount,
-                category=exp.category.value if hasattr(exp.category, "value") else str(exp.category),
-                note=exp.note,
-                created_at=created_at,
-            )
-            inserted_expenses.append(
-                {
-                    "id": eid,
-                    "amount": exp.amount,
-                    "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
-                    "note": exp.note,
-                    "created_at": created_at,
-                }
-            )
+        # 7. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
+        expenses_preview = [
+            {
+                "amount": exp.amount,
+                "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                "note": exp.note,
+                "occurred_date": exp.occurred_date,
+            }
+            for exp in payload.expenses
+        ]
+        tasks_preview = [
+            {
+                "description": task.description,
+                "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+                "due_date": task.due_date,
+                "due_time": task.due_time,
+                "phases": task.phases,
+            }
+            for task in payload.new_tasks
+        ]
 
-        inserted_tasks: List[Dict[str, Any]] = []
-        for task in payload.new_tasks:
-            priority_val = task.priority.value if hasattr(task.priority, "value") else str(task.priority)
-
-            # Check if task has multiple phases
-            if task.phases:
-                parent_id, subtasks = await db.insert_task_with_phases(
-                    description=task.description,
-                    priority=priority_val,
-                    phases=task.phases,
-                    due_date=task.due_date,
-                    due_time=task.due_time,
-                    created_at=now_str,
+        # Callback for [Confirm]
+        async def on_confirm_ingest(interaction: discord.Interaction):
+            inserted_expenses: List[Dict[str, Any]] = []
+            for exp in payload.expenses:
+                created_at = (
+                    f"{exp.occurred_date} 12:00:00" if exp.occurred_date else now_str
                 )
-                inserted_tasks.append(
+                eid = await db.insert_expense(
+                    amount=exp.amount,
+                    category=exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                    note=exp.note,
+                    created_at=created_at,
+                )
+                inserted_expenses.append(
                     {
-                        "id": parent_id,
-                        "description": task.description,
-                        "priority": priority_val,
-                        "due_date": task.due_date,
-                        "due_time": task.due_time,
-                        "created_at": now_str,
-                        "subphases": subtasks,
-                    }
-                )
-            else:
-                tid = await db.insert_task(
-                    description=task.description,
-                    priority=priority_val,
-                    due_date=task.due_date,
-                    due_time=task.due_time,
-                    created_at=now_str,
-                )
-                inserted_tasks.append(
-                    {
-                        "id": tid,
-                        "description": task.description,
-                        "priority": priority_val,
-                        "due_date": task.due_date,
-                        "due_time": task.due_time,
-                        "created_at": now_str,
+                        "id": eid,
+                        "amount": exp.amount,
+                        "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                        "note": exp.note,
+                        "created_at": created_at,
                     }
                 )
 
-        completed_tasks_details: List[Dict[str, Any]] = []
-        if payload.completed_task_ids:
-            completed_tasks_details = await db.complete_tasks_by_ids(
-                payload.completed_task_ids, completed_at=now_str
+            inserted_tasks: List[Dict[str, Any]] = []
+            for task in payload.new_tasks:
+                priority_val = task.priority.value if hasattr(task.priority, "value") else str(task.priority)
+
+                if task.phases:
+                    parent_id, subtasks = await db.insert_task_with_phases(
+                        description=task.description,
+                        priority=priority_val,
+                        phases=task.phases,
+                        due_date=task.due_date,
+                        due_time=task.due_time,
+                        created_at=now_str,
+                    )
+                    inserted_tasks.append(
+                        {
+                            "id": parent_id,
+                            "description": task.description,
+                            "priority": priority_val,
+                            "due_date": task.due_date,
+                            "due_time": task.due_time,
+                            "created_at": now_str,
+                            "subphases": subtasks,
+                        }
+                    )
+                else:
+                    tid = await db.insert_task(
+                        description=task.description,
+                        priority=priority_val,
+                        due_date=task.due_date,
+                        due_time=task.due_time,
+                        created_at=now_str,
+                    )
+                    inserted_tasks.append(
+                        {
+                            "id": tid,
+                            "description": task.description,
+                            "priority": priority_val,
+                            "due_date": task.due_date,
+                            "due_time": task.due_time,
+                            "created_at": now_str,
+                        }
+                    )
+
+            completed_tasks_details: List[Dict[str, Any]] = []
+            if payload.completed_task_ids:
+                completed_tasks_details = await db.complete_tasks_by_ids(
+                    payload.completed_task_ids, completed_at=now_str
+                )
+
+            confirmed_embed = format_action_confirmation(
+                payload=payload,
+                inserted_expenses=inserted_expenses,
+                inserted_tasks=inserted_tasks,
+                completed_tasks=completed_tasks_details,
+            )
+            await interaction.response.edit_message(
+                embed=confirmed_embed, view=None
             )
 
-        # Build and send structured confirmation embed
-        embed = format_action_confirmation(
+        # Callback for [Edit]
+        async def on_edit_ingest(interaction: discord.Interaction):
+            await interaction.response.edit_message(
+                content="✏️ Please send your corrected message directly (e.g. *'Spent RM 20 on lunch'* or *'Task due tomorrow 3pm'*).",
+                embed=None,
+                view=None,
+            )
+
+        # Callback for [Reject]
+        async def on_reject_ingest(interaction: discord.Interaction):
+            await interaction.response.edit_message(
+                content="❌ Entry discarded. Nothing was saved.",
+                embed=None,
+                view=None,
+            )
+
+        # Send Preview Embed with 3 Buttons
+        preview_embed = format_action_preview(
             payload=payload,
-            inserted_expenses=inserted_expenses,
-            inserted_tasks=inserted_tasks,
-            completed_tasks=completed_tasks_details,
+            expenses=expenses_preview,
+            tasks=tasks_preview,
+            completed_task_ids=payload.completed_task_ids,
         )
-        await message.reply(embed=embed)
+        view = ActionIngestionView(
+            on_confirm=on_confirm_ingest,
+            on_edit=on_edit_ingest,
+            on_reject=on_reject_ingest,
+        )
+        await message.reply(embed=preview_embed, view=view)
 
 
 def main():

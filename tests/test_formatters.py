@@ -1,12 +1,28 @@
 import discord
 from src.extractor import ExtractedPayload, QueryScope
 from src.formatters import (
+    format_action_preview,
     format_action_confirmation,
     format_daily_summary,
     format_full_snapshot_summary,
     format_query_results,
     format_help_guide,
 )
+
+
+def test_format_action_preview():
+    payload = ExtractedPayload()
+    expenses = [{"amount": 15.50, "category": "Food & Dining", "note": "Chicken rice"}]
+    tasks = [{"description": "Launch App", "priority": "HIGH", "due_date": "2026-08-30", "due_time": "17:00", "phases": ["Phase 1", "Phase 2"]}]
+    completed = [1]
+
+    embed = format_action_preview(payload, expenses, tasks, completed)
+    assert isinstance(embed, discord.Embed)
+    assert "Action Ingestion Preview" in embed.title
+    field_names = [f.name for f in embed.fields]
+    assert any("Expenses to Log" in name for name in field_names)
+    assert any("Tasks to Create" in name for name in field_names)
+    assert any("Tasks to Complete" in name for name in field_names)
 
 
 def test_format_action_confirmation():

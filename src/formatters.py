@@ -4,6 +4,77 @@ import discord
 from src.extractor import ExtractedPayload, QueryScope
 
 
+def format_action_preview(
+    payload: ExtractedPayload,
+    expenses: List[Dict[str, Any]],
+    tasks: List[Dict[str, Any]],
+    completed_task_ids: List[int],
+) -> discord.Embed:
+    """Build a rich preview embed for user review before committing to database."""
+    embed = discord.Embed(
+        title="📋 Action Ingestion Preview",
+        description="Please review what will be recorded. Click **Confirm** to save, **Edit** to modify, or **Reject** to discard.",
+        color=discord.Color.gold(),
+    )
+
+    # 1. Expenses Preview
+    if expenses:
+        total = sum(e["amount"] for e in expenses)
+        lines = []
+        for exp in expenses:
+            note_str = f" ({exp['note']})" if exp.get("note") else ""
+            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}")
+        embed.add_field(
+            name=f"💸 Expenses to Log (Total: RM {total:.2f})",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    # 2. Tasks Preview (Single or Multi-phase)
+    if tasks:
+        lines = []
+        for t in tasks:
+            due_parts = []
+            if t.get("due_date"):
+                due_parts.append(t["due_date"])
+            if t.get("due_time"):
+                due_parts.append(t["due_time"])
+            due_str = f" _(Due: {' '.join(due_parts)})_" if due_parts else ""
+
+            phases = t.get("phases", [])
+            if phases:
+                lines.append(f"• 📁 `[{t['priority']}]` **{t['description']}**{due_str}")
+                for idx, p in enumerate(phases, start=1):
+                    lines.append(f"   └── ⏳ `Phase {idx}`: {p}")
+            else:
+                lines.append(f"• `[{t['priority']}]` {t['description']}{due_str}")
+
+        embed.add_field(
+            name="📝 Tasks to Create",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    # 3. Completed Tasks Preview
+    if completed_task_ids:
+        lines = [f"• Task ID `#{tid}` marked `DONE`" for tid in completed_task_ids]
+        embed.add_field(
+            name="✅ Tasks to Complete",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    # 4. Ambiguity note if any
+    if payload.ambiguous_task_note:
+        embed.add_field(
+            name="⚠️ Clarification Required",
+            value=payload.ambiguous_task_note,
+            inline=False,
+        )
+
+    return embed
+
+
 def format_action_confirmation(
     payload: ExtractedPayload,
     inserted_expenses: List[Dict[str, Any]],
@@ -260,7 +331,7 @@ def format_help_guide() -> discord.Embed:
     """Build a comprehensive guide embed showing how to interact with the bot."""
     embed = discord.Embed(
         title="📖 Perlica Personal Agent — Quick Start Guide",
-        description="Just send natural sentences directly in this DM! Here are some examples of what you can say:",
+        description="Just send natural sentences directly in this DM! Every addition comes with an interactive **Confirm / Edit / Reject** preview.",
         color=discord.Color.teal(),
     )
 
@@ -302,8 +373,11 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
-        name="🛡️ Zero-Assumption Policy",
-        value="• If you say `Spent RM 50`, the bot will ask what it was for rather than guessing.",
+        name="↩️ 3-Button Ingestion & Undo",
+        value=(
+            "• Every logged item shows `[✅ Confirm]` `[✏️ Edit]` `[❌ Reject]`\n"
+            "• Type `undo` anytime to reverse the last change."
+        ),
         inline=False,
     )
 
