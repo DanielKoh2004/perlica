@@ -10,13 +10,14 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Ordered list of reliable Groq models with automatic fallback
+# Ordered list of active models available on user's Groq tier
 GROQ_MODEL_CANDIDATES = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "groq/compound-mini",
+    "allam-2-7b",
     "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
 ]
 
 

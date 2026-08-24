@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # Groq Configuration
     GROQ_API_KEY: str = Field(default="", description="Groq API key")
-    GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile", description="Groq model ID")
+    GROQ_MODEL: str = Field(default="openai/gpt-oss-120b", description="Groq model ID")
 
     # Storage & Timezone
     DATABASE_PATH: str = Field(default="tracker.db", description="Path to SQLite database")
