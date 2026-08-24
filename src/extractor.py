@@ -249,6 +249,31 @@ class ExtractedPayload(BaseModel):
         default=None,
         description="Exact integer ID of recurring bill to delete from ACTIVE RECURRING BILLS IN DATABASE.",
     )
+    # Savings Goals (Asset Accumulation - NOT deducted by expenses)
+    goal_create_name: Optional[str] = Field(
+        default=None,
+        description="Name of new savings goal to create (e.g. 'Japan Trip', 'Emergency Fund', 'MacBook Pro').",
+    )
+    goal_create_target: Optional[float] = Field(
+        default=None,
+        description="Target savings amount in MYR (e.g. 6000.0).",
+    )
+    goal_create_date: Optional[str] = Field(
+        default=None,
+        description="Target completion date in YYYY-MM-DD format if mentioned.",
+    )
+    goal_deposit_id: Optional[int] = Field(
+        default=None,
+        description="Exact integer ID of active savings goal from ACTIVE SAVINGS GOALS IN DATABASE that savings are being contributed to.",
+    )
+    goal_deposit_amount: Optional[float] = Field(
+        default=None,
+        description="Monetary amount deposited/saved toward the goal as a positive number (e.g. 500.0).",
+    )
+    delete_goal_id: Optional[int] = Field(
+        default=None,
+        description="Exact integer ID of savings goal to delete.",
+    )
     # CSV Data Export
     export_csv: bool = Field(
         default=False,
@@ -269,7 +294,7 @@ class ExtractedPayload(BaseModel):
     )
     query: Optional[QueryScope] = Field(
         default=None,
-        description="Populate if the user is requesting a summary, report, status list, spending analysis, or asking a question about tasks/budget.",
+        description="Populate if the user is requesting a summary, report, status list, spending analysis, or asking a question about tasks/budget/goals.",
     )
     conversational_reply: Optional[str] = Field(
         default=None,
@@ -281,8 +306,9 @@ def build_system_prompt(
     now_local: datetime,
     open_tasks: List[Dict[str, Any]],
     recurring_bills: Optional[List[Dict[str, Any]]] = None,
+    active_goals: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Build a comprehensive system prompt with local temporal anchors, open tasks, and active recurring bills."""
+    """Build a comprehensive system prompt with local temporal anchors, open tasks, active bills, and savings goals."""
     today_str = now_local.strftime("%Y-%m-%d (%A)")
     tomorrow_str = (now_local + timedelta(days=1)).strftime("%Y-%m-%d (%A)")
     yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d (%A)")
@@ -304,7 +330,15 @@ def build_system_prompt(
     else:
         bills_formatted = "No active recurring bills."
 
-    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, budgets, recurring bills, and giving smart advice.
+    if active_goals:
+        g_lines = []
+        for g in active_goals:
+            g_lines.append(f"- [Goal ID: {g['id']}] {g['name']} (Target: RM {g['target_amount']:.2f} | Current Saved: RM {g['current_amount']:.2f})")
+        goals_formatted = "\n".join(g_lines)
+    else:
+        goals_formatted = "No active savings goals."
+
+    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, budgets, recurring bills, dedicated savings goals, and giving smart advice.
 
 LOCAL TIME REFERENCE:
 - Current Local Timestamp: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
@@ -317,6 +351,9 @@ ACTIVE OPEN TASKS IN DATABASE:
 
 ACTIVE RECURRING BILLS IN DATABASE:
 {bills_formatted}
+
+ACTIVE SAVINGS GOALS IN DATABASE:
+{goals_formatted}
 
 EXTRACTION & ZERO-ASSUMPTION RULES:
 1. MALAYSIAN LOCAL CONTEXT & VENDOR MAPPING:
@@ -338,7 +375,14 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - Only set needs_clarification=True if the message contains ONLY a raw number with NO context or vendor (e.g. "Spent 50", "Paid 30").
    - If an item or vendor is present (e.g. "recurring buy $100 worth of s&p500 on the 27th"), set needs_clarification=False and extract all fields.
 
-4. RECURRING BILLS & INVESTMENTS EXAMPLES:
+4. SAVINGS GOALS RULES (CRITICAL):
+   - Savings goals are dedicated asset accumulation funds (e.g. Japan trip, emergency fund).
+   - Standard expenses (food, transport, shopping) NEVER deduct from savings goals!
+   - "saving for japan trip and i need 6k" or "create goal Japan Trip target 6000": set goal_create_name="Japan Trip", goal_create_target=6000.0.
+   - "saved RM 500 for japan trip" or "put 300 to japan fund" or "add 500 to my savings goal":
+     Match exact Goal ID from ACTIVE SAVINGS GOALS IN DATABASE. Set goal_deposit_id=<matched_id>, goal_deposit_amount=<amount>. If only 1 goal exists in database, use its ID.
+
+5. RECURRING BILLS & INVESTMENTS EXAMPLES:
    - "recurring buy $100 worth of s&p500 on the 27th on every month":
      add_bill_name="S&P500", add_bill_amount=100.0, add_bill_category=ExpenseCategory.INVESTMENT, add_bill_day=27, needs_clarification=False
    - "edit the recurring buy to 400":
@@ -346,30 +390,28 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - "delete recurring bill #1":
      delete_bill_id=1, needs_clarification=False
 
-4. BUDGET COMMANDS:
+6. BUDGET COMMANDS:
    - "Set monthly food budget to 800": set set_budget_category="Food & Dining", set_budget_amount=800.0.
 
-5. CSV EXPORT:
+7. CSV EXPORT & REPORTS:
    - "export expenses", "download csv", "export to excel", "export this month": set export_csv=True.
 
-6. UNDO, DELETE, EDIT & REOPEN:
+8. UNDO, DELETE, EDIT & REOPEN:
    - "undo", "cancel that", "undo last": set undo_intent="LAST" (or "EXPENSE"/"TASK"/"BILL").
    - "delete expense #3": set delete_expense_id=3.
    - "delete task #5": set delete_task_id=5.
-   - "change expense #2 amount to 25": set edit_expense_id=2, edit_expense_amount=25.0.
-   - "update task #4 due date to tomorrow": set edit_task_id=4, edit_task_due_date calculated from tomorrow.
-   - "reopen task #1" or "mark task #1 open": set reopen_task_id=1.
 
-7. MULTI-PHASE TASKS:
+9. MULTI-PHASE TASKS:
    - "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing": TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
 
-8. ON-DEMAND SUMMARIES & RECAPS:
+10. ON-DEMAND SUMMARIES & RECAPS:
    - "summarize today", "recap my day", "summary of this week": query with query_target='SUMMARY' and timeframe.
+   - "goals", "my savings goals", "show goals": query with query_target='GENERAL' or specific_question='Show savings goals'.
 
-9. TASK COMPLETIONS:
+11. TASK COMPLETIONS:
    - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID.
 
-10. CASUAL CONVERSATION:
+12. CASUAL CONVERSATION:
    - For greetings, check-ins, or questions without data logging, provide a warm conversational_reply.
 """
 
@@ -435,6 +477,7 @@ class ExtractionEngine:
         now_local: datetime,
         open_tasks: List[Dict[str, Any]],
         recurring_bills: Optional[List[Dict[str, Any]]] = None,
+        active_goals: Optional[List[Dict[str, Any]]] = None,
     ) -> ExtractedPayload:
         """Extract structured task, expense, query, or conversational information with automatic model fallback."""
         if not text or not text.strip():
@@ -443,7 +486,7 @@ class ExtractionEngine:
             )
 
         client = self._get_client()
-        system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills)
+        system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills, active_goals)
 
         models_to_try = list(GROQ_MODEL_CANDIDATES)
 
@@ -484,6 +527,7 @@ class ExtractionEngine:
         now_local: datetime,
         open_tasks: List[Dict[str, Any]],
         recurring_bills: Optional[List[Dict[str, Any]]] = None,
+        active_goals: Optional[List[Dict[str, Any]]] = None,
     ) -> ExtractedPayload:
         """Extract expense data directly from a receipt, invoice, or screenshot image using Groq Vision."""
         import base64
@@ -496,7 +540,7 @@ class ExtractionEngine:
         data_url = f"data:{mime_type};base64,{b64_img}"
 
         vision_models = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
-        system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills)
+        system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills, active_goals)
 
         ocr_prompt = (
             "Analyze this receipt or bill image. Identify the merchant/store name, total amount spent in MYR (or currency number), "

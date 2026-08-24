@@ -2,7 +2,7 @@ import io
 import re
 import logging
 import datetime
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Tuple
 from datetime import timedelta
 import discord
 from discord import app_commands
@@ -33,6 +33,10 @@ from src.formatters import (
     format_live_dashboard,
     format_task_snooze_embed,
     format_presets_embed,
+    format_goals_overview,
+    format_search_results,
+    format_calendar_day_view,
+    generate_html_report,
 )
 
 logging.basicConfig(
@@ -331,6 +335,80 @@ class BillEditModal(discord.ui.Modal, title="✏️ Edit Recurring Bill"):
 
 # --- INTERACTIVE DISCORD UI VIEWS ---
 
+class QuickUndoView(discord.ui.View):
+    """10-second ephemeral quick undo button toast with deterministic rollback."""
+
+    def __init__(
+        self,
+        expense_ids: List[int],
+        task_ids: List[int],
+        goal_deposit: Optional[Tuple[int, float]] = None,
+        created_goal_id: Optional[int] = None,
+        timeout: float = 10.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.expense_ids = expense_ids
+        self.task_ids = task_ids
+        self.goal_deposit = goal_deposit
+        self.created_goal_id = created_goal_id
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Quick Undo (10s)", style=discord.ButtonStyle.danger, emoji="↩️", custom_id="btn_quick_undo")
+    async def undo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        
+        await db.delete_expenses_by_ids(self.expense_ids)
+        await db.delete_tasks_by_ids(self.task_ids)
+        if self.goal_deposit:
+            gid, amt = self.goal_deposit
+            await db.revert_goal_deposit(gid, amt)
+        if self.created_goal_id:
+            await db.delete_goal(self.created_goal_id)
+
+        await interaction.response.edit_message(
+            content="↩️ **Action Undone:** Reverted your latest entries without saving.",
+            embed=None,
+            view=None,
+        )
+
+
+class CalendarStripView(discord.ui.View):
+    """
+    7-day calendar day inspector view.
+    Partitioned across Row 0 (5 days max) and Row 1 (2 days) to guarantee zero Discord HTTP 400 crashes!
+    """
+
+    def __init__(self, base_date: datetime.date, timeout: float = 180.0):
+        super().__init__(timeout=timeout)
+        self.base_date = base_date
+
+        for i in range(7):
+            day_dt = base_date + timedelta(days=i)
+            day_str = day_dt.strftime("%Y-%m-%d")
+            day_label = day_dt.strftime("%a %d")
+            row_idx = 0 if i < 5 else 1
+            btn = discord.ui.Button(
+                label=day_label,
+                style=discord.ButtonStyle.primary if i == 0 else discord.ButtonStyle.secondary,
+                emoji="📅",
+                custom_id=f"cal_day_{day_str}",
+                row=row_idx,
+            )
+            btn.callback = self.make_day_callback(day_str)
+            self.add_item(btn)
+
+    def make_day_callback(self, date_str: str):
+        async def callback(interaction: discord.Interaction):
+            expenses, total_spent, open_tasks = await db.get_daily_summary(date_str)
+            embed = format_calendar_day_view(date_str, expenses, total_spent, open_tasks)
+            await interaction.response.edit_message(embed=embed, view=self)
+        return callback
+
+
 class ActionIngestionView(discord.ui.View):
     """3-button interactive view: Confirm, Edit Modal, or Reject new entries."""
 
@@ -352,7 +430,6 @@ class ActionIngestionView(discord.ui.View):
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id="btn_edit_ingest")
     async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Open appropriate native Discord popup modal
         if self.payload.add_bill_name or self.payload.add_bill_amount is not None:
             await interaction.response.send_modal(BillEditModal(self.payload, self))
         elif self.payload.new_tasks and not self.payload.expenses:
@@ -477,7 +554,6 @@ class TaskSnoozeView(discord.ui.View):
     @discord.ui.button(label="Push to Weekend", style=discord.ButtonStyle.secondary, emoji="📅", custom_id="btn_snooze_weekend")
     async def snooze_weekend(self, interaction: discord.Interaction, button: discord.ui.Button):
         now_local = datetime.datetime.now(settings.tz)
-        # Days until Saturday (weekday 5)
         days_to_sat = (5 - now_local.weekday()) % 7
         if days_to_sat == 0:
             days_to_sat = 7
@@ -575,6 +651,8 @@ class LiveDashboardView(discord.ui.View):
         upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
         open_tasks = await db.get_open_tasks()
         streak_info = await db.get_productivity_streak(today_str)
+        active_goals = await db.get_active_goals()
+        rank_info = await db.get_productivity_rank(today_str)
 
         new_embed = format_live_dashboard(
             today_spent=today_spent,
@@ -586,6 +664,8 @@ class LiveDashboardView(discord.ui.View):
             open_tasks=open_tasks,
             streak_info=streak_info,
             date_str=today_str,
+            active_goals=active_goals,
+            rank_info=rank_info,
         )
         await interaction.response.edit_message(embed=new_embed, view=self)
 
@@ -668,6 +748,8 @@ async def slash_dashboard(interaction: discord.Interaction):
     upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
     open_tasks = await db.get_open_tasks()
     streak_info = await db.get_productivity_streak(today_str)
+    active_goals = await db.get_active_goals()
+    rank_info = await db.get_productivity_rank(today_str)
 
     embed = format_live_dashboard(
         today_spent=today_spent,
@@ -679,6 +761,8 @@ async def slash_dashboard(interaction: discord.Interaction):
         open_tasks=open_tasks,
         streak_info=streak_info,
         date_str=today_str,
+        active_goals=active_goals,
+        rank_info=rank_info,
     )
     await interaction.response.send_message(embed=embed, view=LiveDashboardView())
 
@@ -697,6 +781,69 @@ async def slash_budgets(interaction: discord.Interaction):
     month_str = now_local.strftime("%Y-%m")
     status = await db.get_budget_status(month_str)
     await interaction.response.send_message(embed=format_budget_overview(status))
+
+
+@bot.tree.command(name="goals", description="View and track your dedicated savings goals")
+async def slash_goals(interaction: discord.Interaction):
+    goals = await db.get_active_goals()
+    embed = format_goals_overview(goals)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="calendar", description="Open interactive 7-day calendar day inspector")
+async def slash_calendar(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    today_str = now_local.strftime("%Y-%m-%d")
+    expenses, total_spent, open_tasks = await db.get_daily_summary(today_str)
+    embed = format_calendar_day_view(today_str, expenses, total_spent, open_tasks)
+    view = CalendarStripView(base_date=now_local.date())
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="search", description="Search historical expenses and tasks by keyword")
+@app_commands.describe(keyword="Word or store name to search for (e.g. food, grab, macbook)")
+async def slash_search(interaction: discord.Interaction, keyword: str):
+    results = await db.search_records(keyword)
+    embed = format_search_results(keyword, results)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="report", description="Generate and download a standalone HTML executive report")
+async def slash_report(interaction: discord.Interaction):
+    await interaction.response.defer()
+    now_local = datetime.datetime.now(settings.tz)
+    month_str = now_local.strftime("%Y-%m")
+    start_month = now_local.strftime("%Y-%m-01")
+
+    expenses, total_spent, _ = await db.get_expenses_summary(start_month)
+    proportions = await db.get_category_proportions(start_month)
+    budget_status = await db.get_budget_status(month_str)
+    open_tasks = await db.get_open_tasks()
+    completed_tasks = await db.get_completed_tasks()
+    goals = await db.get_active_goals()
+    streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
+    rank_info = await db.get_productivity_rank(now_local.strftime("%Y-%m-%d"))
+
+    html_content = generate_html_report(
+        month_str=month_str,
+        expenses=expenses,
+        total_spent=total_spent,
+        proportions=proportions,
+        budget_status=budget_status,
+        open_tasks=open_tasks,
+        completed_tasks=completed_tasks,
+        goals=goals,
+        streak_info=streak_info,
+        rank_info=rank_info,
+    )
+    report_file = discord.File(
+        io.BytesIO(html_content.encode("utf-8")),
+        filename=f"Perlica_Executive_Report_{month_str}.html",
+    )
+    await interaction.followup.send(
+        content=f"📊 **Here is your Executive Financial & Productivity HTML Report for {now_local.strftime('%B %Y')}:**\n_(Download and open in any browser)_",
+        file=report_file,
+    )
 
 
 @bot.tree.command(name="export", description="Download your monthly expense spreadsheet (.csv)")
@@ -744,7 +891,6 @@ async def on_ready():
     await db.init_db()
     logger.info("Database schema initialized successfully.")
 
-    # Register persistent views for restart resilience
     bot.add_view(QuickActionView())
     bot.add_view(LiveDashboardView())
 
@@ -790,6 +936,8 @@ async def morning_briefing_loop():
     upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
     budget_status = await db.get_budget_status(month_str)
     safe_allowance = await db.get_safe_daily_allowance(now_local)
+    active_goals = await db.get_active_goals()
+    rank_info = await db.get_productivity_rank(today_str)
 
     embed = format_morning_briefing(
         open_tasks=open_tasks,
@@ -798,6 +946,8 @@ async def morning_briefing_loop():
         date_str=today_str,
         upcoming_bills=upcoming_bills,
         safe_allowance=safe_allowance,
+        active_goals=active_goals,
+        rank_info=rank_info,
     )
     try:
         await target_user.send(embed=embed, view=QuickActionView())
@@ -885,6 +1035,12 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
     now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
     month_str = now_local.strftime("%Y-%m")
 
+    target_goal_name = None
+    if payload.goal_deposit_id:
+        target_goal = await db.get_goal_by_id(payload.goal_deposit_id)
+        if target_goal:
+            target_goal_name = target_goal["name"]
+
     expenses_preview = [
         {
             "amount": exp.amount,
@@ -907,6 +1063,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
 
     async def on_confirm(interaction: discord.Interaction):
         inserted_expenses: List[Dict[str, Any]] = []
+        created_expense_ids: List[int] = []
         for exp in payload.expenses:
             created_at = f"{exp.occurred_date} 12:00:00" if exp.occurred_date else now_str
             eid = await db.insert_expense(
@@ -915,6 +1072,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
                 note=exp.note,
                 created_at=created_at,
             )
+            created_expense_ids.append(eid)
             inserted_expenses.append(
                 {
                     "id": eid,
@@ -926,6 +1084,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             )
 
         inserted_tasks: List[Dict[str, Any]] = []
+        created_task_ids: List[int] = []
         for task in payload.new_tasks:
             priority_val = task.priority.value if hasattr(task.priority, "value") else str(task.priority)
             if task.phases:
@@ -937,6 +1096,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
                     due_time=task.due_time,
                     created_at=now_str,
                 )
+                created_task_ids.append(parent_id)
                 inserted_tasks.append(
                     {
                         "id": parent_id,
@@ -956,6 +1116,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
                     due_time=task.due_time,
                     created_at=now_str,
                 )
+                created_task_ids.append(tid)
                 inserted_tasks.append(
                     {
                         "id": tid,
@@ -970,6 +1131,26 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
         completed_tasks_details: List[Dict[str, Any]] = []
         if payload.completed_task_ids:
             completed_tasks_details = await db.complete_tasks_by_ids(payload.completed_task_ids, completed_at=now_str)
+
+        # Handle Savings Goals Deposits (Isolated Asset Accumulation)
+        goal_update_info = None
+        goal_deposit_tuple = None
+        if payload.goal_deposit_id and payload.goal_deposit_amount:
+            goal_res = await db.deposit_to_goal(payload.goal_deposit_id, payload.goal_deposit_amount)
+            if goal_res:
+                goal_update_info = dict(goal_res)
+                goal_update_info["deposited_delta"] = payload.goal_deposit_amount
+                goal_deposit_tuple = (payload.goal_deposit_id, payload.goal_deposit_amount)
+
+        # Handle Savings Goals Creation
+        created_goal_id = None
+        if payload.goal_create_name and payload.goal_create_target:
+            created_goal_id = await db.create_goal(
+                name=payload.goal_create_name,
+                target_amount=payload.goal_create_target,
+                target_date=payload.goal_create_date,
+                created_at=now_str,
+            )
 
         if payload.add_bill_name and payload.add_bill_amount is not None:
             b_cat = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
@@ -996,14 +1177,23 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             completed_tasks=completed_tasks_details,
             budget_alerts=budget_alerts,
             streak_info=streak_info,
+            goal_update_info=goal_update_info,
         )
-        await interaction.response.edit_message(embed=confirmed_embed, view=QuickActionView())
+
+        quick_undo_view = QuickUndoView(
+            expense_ids=created_expense_ids,
+            task_ids=created_task_ids,
+            goal_deposit=goal_deposit_tuple,
+            created_goal_id=created_goal_id,
+        )
+        await interaction.response.edit_message(embed=confirmed_embed, view=quick_undo_view)
 
     preview_embed = format_action_preview(
         payload=payload,
         expenses=expenses_preview,
         tasks=tasks_preview,
         completed_task_ids=payload.completed_task_ids,
+        target_goal_name=target_goal_name,
     )
     view = ActionIngestionView(on_confirm=on_confirm, payload=payload)
 
@@ -1064,6 +1254,8 @@ async def on_message(message: discord.Message):
         upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
         open_tasks = await db.get_open_tasks()
         streak_info = await db.get_productivity_streak(today_str)
+        active_goals = await db.get_active_goals()
+        rank_info = await db.get_productivity_rank(today_str)
 
         embed = format_live_dashboard(
             today_spent=today_spent,
@@ -1075,8 +1267,72 @@ async def on_message(message: discord.Message):
             open_tasks=open_tasks,
             streak_info=streak_info,
             date_str=today_str,
+            active_goals=active_goals,
+            rank_info=rank_info,
         )
         await message.reply(embed=embed, view=LiveDashboardView())
+        return
+
+    # Direct Goals Command Check
+    if content.lower() in ("goals", "!goals", "/goals", "goal"):
+        goals = await db.get_active_goals()
+        await message.reply(embed=format_goals_overview(goals), view=QuickActionView())
+        return
+
+    # Direct Calendar Command Check
+    if content.lower() in ("calendar", "!calendar", "week", "days"):
+        now_local = datetime.datetime.now(settings.tz)
+        today_str = now_local.strftime("%Y-%m-%d")
+        expenses, total_spent, open_tasks = await db.get_daily_summary(today_str)
+        embed = format_calendar_day_view(today_str, expenses, total_spent, open_tasks)
+        view = CalendarStripView(base_date=now_local.date())
+        await message.reply(embed=embed, view=view)
+        return
+
+    # Direct Report Command Check
+    if content.lower() in ("report", "!report", "/report", "html report"):
+        async with message.channel.typing():
+            now_local = datetime.datetime.now(settings.tz)
+            month_str = now_local.strftime("%Y-%m")
+            start_month = now_local.strftime("%Y-%m-01")
+
+            expenses, total_spent, _ = await db.get_expenses_summary(start_month)
+            proportions = await db.get_category_proportions(start_month)
+            budget_status = await db.get_budget_status(month_str)
+            open_tasks = await db.get_open_tasks()
+            completed_tasks = await db.get_completed_tasks()
+            goals = await db.get_active_goals()
+            streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
+            rank_info = await db.get_productivity_rank(now_local.strftime("%Y-%m-%d"))
+
+            html_content = generate_html_report(
+                month_str=month_str,
+                expenses=expenses,
+                total_spent=total_spent,
+                proportions=proportions,
+                budget_status=budget_status,
+                open_tasks=open_tasks,
+                completed_tasks=completed_tasks,
+                goals=goals,
+                streak_info=streak_info,
+                rank_info=rank_info,
+            )
+            report_file = discord.File(
+                io.BytesIO(html_content.encode("utf-8")),
+                filename=f"Perlica_Executive_Report_{month_str}.html",
+            )
+            await message.reply(
+                content=f"📊 **Here is your Executive HTML Report for {now_local.strftime('%B %Y')}:**",
+                file=report_file,
+            )
+            return
+
+    # Direct Search Command Check (e.g. "find grab" or "search food")
+    search_match = re.match(r"^(?:find|search)\s+(.+)$", content.lower())
+    if search_match:
+        keyword = search_match.group(1).strip()
+        results = await db.search_records(keyword)
+        await message.reply(embed=format_search_results(keyword, results))
         return
 
     # Direct Presets Command Check
@@ -1113,6 +1369,7 @@ async def on_message(message: discord.Message):
         month_str = now_local.strftime("%Y-%m")
         open_tasks = await db.get_open_tasks()
         recurring_bills = await db.list_recurring_bills()
+        active_goals = await db.get_active_goals()
 
         # Receipt Image OCR extraction
         if image_attachment and not content:
@@ -1123,6 +1380,7 @@ async def on_message(message: discord.Message):
                 now_local=now_local,
                 open_tasks=open_tasks,
                 recurring_bills=recurring_bills,
+                active_goals=active_goals,
             )
         else:
             payload: ExtractedPayload = await extractor.extract_information(
@@ -1130,6 +1388,7 @@ async def on_message(message: discord.Message):
                 now_local=now_local,
                 open_tasks=open_tasks,
                 recurring_bills=recurring_bills,
+                active_goals=active_goals,
             )
 
         # 0. Clarification Prompt
@@ -1197,7 +1456,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_undo))
             return
 
-        # 3. DELETE Specific Expense / Task / Bill with Button Confirmation
+        # 3. DELETE Specific Expense / Task / Bill / Goal with Button Confirmation
         if payload.delete_expense_id:
             eid = payload.delete_expense_id
             target_exp = await db.get_expense_by_id(eid)
@@ -1265,6 +1524,29 @@ async def on_message(message: discord.Message):
                 color=discord.Color.red(),
             )
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_bill))
+            return
+
+        if payload.delete_goal_id:
+            gid = payload.delete_goal_id
+            target_goal = await db.get_goal_by_id(gid)
+            if not target_goal:
+                await message.reply(f"Savings Goal #{gid} was not found.")
+                return
+
+            async def do_delete_goal(interaction: discord.Interaction):
+                await db.delete_goal(gid)
+                await interaction.response.edit_message(
+                    content=f"🗑️ **Deleted Savings Goal #{gid}:** `{target_goal['name']}` (Target: RM {target_goal['target_amount']:.2f}).",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Goal Deletion",
+                description=f"Are you sure you want to delete **Savings Goal #{gid}** (`{target_goal['name']}` — Target: RM {target_goal['target_amount']:.2f})?",
+                color=discord.Color.red(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_goal))
             return
 
         # 4. EDIT Expense / Task / Bill with Button Confirmation
@@ -1398,6 +1680,8 @@ async def on_message(message: discord.Message):
             or payload.completed_task_ids
             or payload.add_bill_name
             or payload.set_budget_category
+            or payload.goal_create_name
+            or payload.goal_deposit_id
             or payload.ambiguous_task_note
             or payload.query
         )
@@ -1410,7 +1694,7 @@ async def on_message(message: discord.Message):
             await message.reply(reply_text, view=QuickActionView())
             return
 
-        # 7. Query / Immediate Summary / Budget Overview / Tasks Handling
+        # 7. Query / Immediate Summary / Budget Overview / Tasks / Goals Handling
         if payload.query:
             q = payload.query
             today_date = now_local.date()

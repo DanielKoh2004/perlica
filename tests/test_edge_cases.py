@@ -295,3 +295,141 @@ async def test_category_proportion_ascii_heatmap(db: DatabaseManager):
     assert "`[" in heatmap and "]`" in heatmap
 
 
+@pytest.mark.asyncio
+async def test_savings_goals_crud_and_isolation_from_expenses(db: DatabaseManager):
+    """
+    Verify Savings Goals:
+    1. Creation of target goal (e.g. Japan Trip - RM 6,000)
+    2. Savings deposits increase balance
+    3. Normal expenses DO NOT deduct from goal balance!
+    4. Goal completion flag triggers when target is reached
+    """
+    # 1. Create Goal
+    gid = await db.create_goal(name="Japan Trip", target_amount=6000.0, target_date="2027-04-01", created_at="2026-08-25 10:00:00")
+    assert gid > 0
+
+    goals = await db.get_active_goals()
+    assert len(goals) == 1
+    assert goals[0]["name"] == "Japan Trip"
+    assert goals[0]["target_amount"] == 6000.0
+    assert goals[0]["current_amount"] == 0.0
+    assert goals[0]["remaining"] == 6000.0
+
+    # 2. Deposit RM 500 to Goal
+    updated = await db.deposit_to_goal(gid, 500.0)
+    assert updated["current_amount"] == 500.0
+    assert updated["remaining"] == 5500.0
+    assert updated["percentage"] == round(500.0 / 6000.0 * 100, 1)
+
+    # 3. Log an everyday expense (RM 50 Food & Dining)
+    await db.insert_expense(50.0, "Food & Dining", "Sushi Lunch", "2026-08-25 12:00:00")
+
+    # Goal balance must remain strictly intact at RM 500.00!
+    goal_check = await db.get_goal_by_id(gid)
+    assert goal_check["current_amount"] == 500.0
+
+    # 4. Deposit remaining balance to reach target
+    final_deposit = await db.deposit_to_goal(gid, 5500.0)
+    assert final_deposit["current_amount"] == 6000.0
+    assert final_deposit["is_completed"] == 1
+
+    # Active goals query should now return empty since it's completed
+    active = await db.get_active_goals()
+    assert len(active) == 0
+
+
+@pytest.mark.asyncio
+async def test_atomic_rollback_and_quick_undo(db: DatabaseManager):
+    """Verify deterministic rollback of expenses, tasks, and goal deposits by primary keys."""
+    # Insert 2 expenses
+    e1 = await db.insert_expense(25.0, "Transport", "Grab", "2026-08-25 10:00:00")
+    e2 = await db.insert_expense(15.0, "Food & Dining", "Kopi", "2026-08-25 10:05:00")
+
+    # Insert 1 parent task with subphases
+    pid, subtasks = await db.insert_task_with_phases(
+        description="Project Alpha",
+        priority="HIGH",
+        phases=["P1", "P2"],
+        due_date="2026-08-30",
+        due_time=None,
+        created_at="2026-08-25 10:00:00",
+    )
+
+    # Deposit to goal
+    gid = await db.create_goal("MacBook", 8000.0, created_at="2026-08-25 10:00:00")
+    await db.deposit_to_goal(gid, 1000.0)
+
+    # Execute atomic rollback
+    del_exp_count = await db.delete_expenses_by_ids([e1, e2])
+    assert del_exp_count == 2
+    assert await db.get_expense_by_id(e1) is None
+    assert await db.get_expense_by_id(e2) is None
+
+    del_task_count = await db.delete_tasks_by_ids([pid])
+    assert del_task_count >= 1
+    assert await db.get_task_by_id(pid) is None
+
+    reverted_goal = await db.revert_goal_deposit(gid, 1000.0)
+    assert reverted_goal["current_amount"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_productivity_rank_tiers(db: DatabaseManager):
+    """Verify progression through productivity rank tiers."""
+    # Rank with 0 streak -> Apprentice
+    rank0 = await db.get_productivity_rank("2026-08-25")
+    assert rank0["level"] == 0
+    assert "Apprentice" in rank0["title"]
+
+    # 5-day streak -> Budget Strategist
+    for i in range(5):
+        d_str = f"2026-08-{21+i:02d}"
+        await db.insert_expense(10.0, "Food & Dining", "Meal", f"{d_str} 12:00:00")
+
+    rank5 = await db.get_productivity_rank("2026-08-25")
+    assert rank5["streak_days"] == 5
+    assert rank5["level"] >= 2
+    assert "Strategist" in rank5["title"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_search_across_expenses_and_tasks(db: DatabaseManager):
+    """Verify search_records searches across expense notes, categories, and task descriptions."""
+    await db.insert_expense(45.0, "Transport", "Grab ride to KL Sentral", "2026-08-25 12:00:00")
+    await db.insert_expense(12.0, "Food & Dining", "GrabFood delivery", "2026-08-25 13:00:00")
+    await db.insert_task("Book Grab for airport transfer", created_at="2026-08-25 10:00:00")
+
+    results = await db.search_records("Grab")
+    assert results["keyword"] == "Grab"
+    assert len(results["expenses"]) == 2
+    assert results["total_spent_on_matches"] == 57.0
+    assert len(results["tasks"]) == 1
+    assert "airport transfer" in results["tasks"][0]["description"]
+
+
+def test_html_report_generator():
+    """Verify generate_html_report outputs valid, styled HTML content."""
+    from src.formatters import generate_html_report
+
+    html = generate_html_report(
+        month_str="2026-08",
+        expenses=[{"id": 1, "created_at": "2026-08-25 12:00:00", "category": "Food & Dining", "amount": 25.0, "note": "Lunch"}],
+        total_spent=25.0,
+        proportions=[{"category": "Food & Dining", "amount": 25.0, "percentage": 100.0}],
+        budget_status=[{"category": "Food & Dining", "spent": 25.0, "limit": 800.0, "percentage": 3.1}],
+        open_tasks=[],
+        completed_tasks=[{"id": 1, "description": "Finished proposal"}],
+        goals=[{"name": "Japan Trip", "current_amount": 500.0, "target_amount": 6000.0, "percentage": 8.3}],
+        streak_info={"streak_days": 7, "completed_this_week": 5},
+        rank_info={"level": 2, "title": "Budget Strategist 🥈"},
+    )
+
+    assert "<!DOCTYPE html>" in html
+    assert "Perlica Executive Report" in html
+    assert "2026-08" in html
+    assert "Budget Strategist" in html
+    assert "Japan Trip" in html
+    assert "RM 25.00" in html
+
+
+

@@ -78,6 +78,20 @@ class DatabaseManager:
                 );
                 """
             )
+            # 5. Dedicated Savings Goals Table (Asset accumulation, NOT deductible by expenses)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    target_amount REAL NOT NULL,
+                    current_amount REAL DEFAULT 0.0,
+                    target_date TEXT,
+                    is_completed INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
 
             # Auto-migration for tasks table columns
             async with conn.execute("PRAGMA table_info(tasks);") as cursor:
@@ -918,3 +932,207 @@ class DatabaseManager:
 
         new_due_str = (base_dt + timedelta(days=days_to_add)).strftime("%Y-%m-%d")
         return await self.update_task(task_id, due_date=new_due_str)
+
+    # --- SAVINGS GOALS (ISOLATED ASSET ACCUMULATION) ---
+
+    async def create_goal(
+        self,
+        name: str,
+        target_amount: float,
+        current_amount: float = 0.0,
+        target_date: Optional[str] = None,
+        created_at: str = "",
+    ) -> int:
+        """Create a dedicated savings goal."""
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO goals (name, target_amount, current_amount, target_date, is_completed, created_at)
+                VALUES (?, ?, ?, ?, 0, ?)
+                """,
+                (name, round(target_amount, 2), round(current_amount, 2), target_date, created_at),
+            )
+            await conn.commit()
+            return cur.lastrowid
+
+    async def get_goal_by_id(self, goal_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a savings goal by its exact integer ID."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_active_goals(self) -> List[Dict[str, Any]]:
+        """List active savings goals with progress calculations."""
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM goals WHERE is_completed = 0 ORDER BY id ASC"
+            ) as cur:
+                rows = await cur.fetchall()
+                goals = []
+                for r in rows:
+                    g = dict(r)
+                    target = g["target_amount"]
+                    curr = g["current_amount"]
+                    pct = round((curr / target) * 100, 1) if target > 0 else 0.0
+                    rem = max(round(target - curr, 2), 0.0)
+                    g["percentage"] = min(pct, 100.0)
+                    g["remaining"] = rem
+                    goals.append(g)
+                return goals
+
+    async def deposit_to_goal(self, goal_id: int, amount: float) -> Optional[Dict[str, Any]]:
+        """
+        Deterministically deposit savings into a goal by its exact integer ID.
+        Standard expenses do NOT deduct from this balance.
+        """
+        goal = await self.get_goal_by_id(goal_id)
+        if not goal:
+            return None
+
+        new_amt = round(goal["current_amount"] + amount, 2)
+        is_done = 1 if new_amt >= goal["target_amount"] else 0
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "UPDATE goals SET current_amount = ?, is_completed = ? WHERE id = ?",
+                (new_amt, is_done, goal_id),
+            )
+            await conn.commit()
+
+        updated = await self.get_goal_by_id(goal_id)
+        if updated:
+            updated["percentage"] = round((updated["current_amount"] / updated["target_amount"]) * 100, 1)
+            updated["remaining"] = max(round(updated["target_amount"] - updated["current_amount"], 2), 0.0)
+        return updated
+
+    async def revert_goal_deposit(self, goal_id: int, amount: float) -> Optional[Dict[str, Any]]:
+        """Revert / rollback a specific savings deposit."""
+        goal = await self.get_goal_by_id(goal_id)
+        if not goal:
+            return None
+        new_amt = max(0.0, round(goal["current_amount"] - amount, 2))
+        is_done = 1 if new_amt >= goal["target_amount"] else 0
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "UPDATE goals SET current_amount = ?, is_completed = ? WHERE id = ?",
+                (new_amt, is_done, goal_id),
+            )
+            await conn.commit()
+        return await self.get_goal_by_id(goal_id)
+
+    async def delete_goal(self, goal_id: int) -> Optional[Dict[str, Any]]:
+        """Delete a savings goal."""
+        g = await self.get_goal_by_id(goal_id)
+        if not g:
+            return None
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+            await conn.commit()
+        return g
+
+    # --- ATOMIC ROLLBACK / QUICK UNDO HELPERS ---
+
+    async def delete_expenses_by_ids(self, expense_ids: List[int]) -> int:
+        """Deterministically delete specific expenses by primary keys."""
+        if not expense_ids:
+            return 0
+        placeholders = ",".join("?" * len(expense_ids))
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                f"DELETE FROM expenses WHERE id IN ({placeholders})",
+                tuple(expense_ids),
+            )
+            await conn.commit()
+            return cur.rowcount
+
+    async def delete_tasks_by_ids(self, task_ids: List[int]) -> int:
+        """Deterministically delete specific tasks by primary keys."""
+        if not task_ids:
+            return 0
+        placeholders = ",".join("?" * len(task_ids))
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                f"DELETE FROM tasks WHERE id IN ({placeholders}) OR parent_id IN ({placeholders})",
+                tuple(task_ids) + tuple(task_ids),
+            )
+            await conn.commit()
+            return cur.rowcount
+
+    # --- GAMIFIED PRODUCTIVITY RANKS ---
+
+    async def get_productivity_rank(self, today_str: str) -> Dict[str, Any]:
+        """Compute user's gamified rank and badge based on streak and task completion momentum."""
+        streak_data = await self.get_productivity_streak(today_str)
+        streak = streak_data.get("streak_days", 0)
+        tasks_week = streak_data.get("completed_this_week", 0)
+
+        # Ranks: Novice (1-3) -> Strategist (4-7) -> Commander (8-14) -> Master (15-29) -> Legend (30+)
+        if streak >= 30:
+            level = 5
+            title = "Perlica Legend 👑"
+            next_goal = "You've attained the highest mastery tier! Keep dominating."
+        elif streak >= 15:
+            level = 4
+            title = "Financial Master 💎"
+            next_goal = f"{30 - streak} more active days to reach Legend tier."
+        elif streak >= 8 or tasks_week >= 15:
+            level = 3
+            title = "Productivity Commander 🥇"
+            next_goal = f"{15 - streak} more active days to reach Financial Master."
+        elif streak >= 4 or tasks_week >= 7:
+            level = 2
+            title = "Budget Strategist 🥈"
+            next_goal = f"{8 - streak} more active days to reach Commander."
+        elif streak >= 1:
+            level = 1
+            title = "Active Tracker 🥉"
+            next_goal = f"{4 - streak} more active days to reach Strategist."
+        else:
+            level = 0
+            title = "Apprentice 🌱"
+            next_goal = "Log an expense or finish a task today to begin your streak!"
+
+        return {
+            "level": level,
+            "title": title,
+            "streak_days": streak,
+            "completed_this_week": tasks_week,
+            "next_milestone": next_goal,
+        }
+
+    # --- KEYWORD SEARCH & FILTER ---
+
+    async def search_records(self, keyword: str) -> Dict[str, Any]:
+        """Search expenses and tasks matching keyword across notes, categories, and descriptions."""
+        pattern = f"%{keyword.strip()}%"
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT * FROM expenses
+                WHERE note LIKE ? OR category LIKE ?
+                ORDER BY created_at DESC LIMIT 15
+                """,
+                (pattern, pattern),
+            ) as cur:
+                exp_rows = await cur.fetchall()
+                expenses = [dict(r) for r in exp_rows]
+
+            async with conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE description LIKE ?
+                ORDER BY created_at DESC LIMIT 15
+                """,
+                (pattern,),
+            ) as cur:
+                task_rows = await cur.fetchall()
+                tasks = [dict(r) for r in task_rows]
+
+        total_spent = sum(e["amount"] for e in expenses)
+        return {
+            "keyword": keyword,
+            "expenses": expenses,
+            "tasks": tasks,
+            "total_spent_on_matches": round(total_spent, 2),
+        }

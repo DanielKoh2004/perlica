@@ -57,6 +57,7 @@ def format_action_preview(
     expenses: List[Dict[str, Any]],
     tasks: List[Dict[str, Any]],
     completed_task_ids: List[int],
+    target_goal_name: Optional[str] = None,
 ) -> discord.Embed:
     """Build a rich preview embed for user review before committing to database."""
     embed = discord.Embed(
@@ -103,7 +104,25 @@ def format_action_preview(
             inline=False,
         )
 
-    # 3. Recurring Bills Preview
+    # 3. Savings Goal Deposit Preview
+    if payload.goal_deposit_id and payload.goal_deposit_amount:
+        g_name = target_goal_name or f"Goal #{payload.goal_deposit_id}"
+        embed.add_field(
+            name="🎯 Savings Goal Deposit",
+            value=f"• **Deposit RM {payload.goal_deposit_amount:.2f}** to **{g_name}**\n_(Asset accumulation — will not deduct from daily budgets)_",
+            inline=False,
+        )
+
+    # 4. New Savings Goal Creation Preview
+    if payload.goal_create_name and payload.goal_create_target:
+        due_text = f" _(Target: {payload.goal_create_date})_" if payload.goal_create_date else ""
+        embed.add_field(
+            name="🏆 New Savings Goal Setup",
+            value=f"• **{payload.goal_create_name}** — Target: **RM {payload.goal_create_target:.2f}**{due_text}",
+            inline=False,
+        )
+
+    # 5. Recurring Bills Preview
     if payload.add_bill_name and payload.add_bill_amount is not None:
         cat_name = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
         day_str = f"on the {payload.add_bill_day}th" if payload.add_bill_day else "monthly"
@@ -113,7 +132,7 @@ def format_action_preview(
             inline=False,
         )
 
-    # 4. Budget Limit Preview
+    # 6. Budget Limit Preview
     if payload.set_budget_category and payload.set_budget_amount is not None:
         embed.add_field(
             name="🎯 Monthly Budget to Set",
@@ -121,7 +140,7 @@ def format_action_preview(
             inline=False,
         )
 
-    # 5. Completed Tasks Preview
+    # 7. Completed Tasks Preview
     if completed_task_ids:
         lines = [f"• Task ID `#{tid}` marked `DONE`" for tid in completed_task_ids]
         embed.add_field(
@@ -130,7 +149,7 @@ def format_action_preview(
             inline=False,
         )
 
-    # 6. Ambiguity note if any
+    # 8. Ambiguity note if any
     if payload.ambiguous_task_note:
         embed.add_field(
             name="⚠️ Clarification Required",
@@ -148,11 +167,15 @@ def format_action_confirmation(
     completed_tasks: List[Dict[str, Any]],
     budget_alerts: Optional[List[str]] = None,
     streak_info: Optional[Dict[str, Any]] = None,
+    goal_update_info: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build a rich confirmation embed for logged actions with hierarchy, budget alerts, and streak badge."""
+    is_breach = bool(budget_alerts and any("exceeded" in a.lower() or "🚨" in a for a in budget_alerts))
+    color = discord.Color.red() if is_breach else discord.Color.green()
+
     embed = discord.Embed(
-        title="⚡ Action Processed",
-        color=discord.Color.green(),
+        title="🚨 Budget Breach Alert" if is_breach else "⚡ Action Processed",
+        color=color,
     )
 
     # 1. Logged Expenses
@@ -168,7 +191,7 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 2. Budget Alerts
+    # 2. Budget Alerts (Breach or Warning)
     if budget_alerts:
         embed.add_field(
             name="⚠️ Budget Alert",
@@ -176,7 +199,17 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 3. New Tasks (Parent & Phases)
+    # 3. Savings Goal Deposit Update
+    if goal_update_info:
+        bar = render_progress_bar(goal_update_info["current_amount"], goal_update_info["target_amount"])
+        rem_str = f"RM {goal_update_info['remaining']:.2f} remaining" if goal_update_info["remaining"] > 0 else "🎉 GOAL ACHIEVED!"
+        embed.add_field(
+            name=f"🏆 Savings Goal Updated: {goal_update_info['name']}",
+            value=f"Added: **+RM {goal_update_info.get('deposited_delta', 0.0):.2f}**\nProgress: {bar}\n_{rem_str}_",
+            inline=False,
+        )
+
+    # 4. New Tasks (Parent & Phases)
     if inserted_tasks:
         lines = []
         for t in inserted_tasks:
@@ -202,7 +235,7 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 4. Completed Tasks
+    # 5. Completed Tasks
     if completed_tasks:
         lines = []
         for t in completed_tasks:
@@ -214,14 +247,14 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 5. Streak Footer
+    # 6. Streak Footer
     if streak_info and streak_info.get("streak_days", 0) > 0:
         embed.set_footer(
             text=f"🔥 {streak_info['streak_days']}-Day Logging Streak | {streak_info.get('completed_this_week', 0)} tasks crushed this week!"
         )
 
-    # 6. Conversational Reply fallback
-    if payload.conversational_reply and not inserted_expenses and not inserted_tasks and not completed_tasks and not payload.ambiguous_task_note:
+    # 7. Conversational Reply fallback
+    if payload.conversational_reply and not inserted_expenses and not inserted_tasks and not completed_tasks and not goal_update_info and not payload.ambiguous_task_note:
         embed.description = payload.conversational_reply
 
     return embed
@@ -234,10 +267,13 @@ def format_morning_briefing(
     date_str: str,
     upcoming_bills: Optional[List[Dict[str, Any]]] = None,
     safe_allowance: Optional[Dict[str, Any]] = None,
+    active_goals: Optional[List[Dict[str, Any]]] = None,
+    rank_info: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build a sharp morning kickoff embed at 08:30."""
+    rank_title = f" | {rank_info['title']}" if rank_info else ""
     embed = discord.Embed(
-        title=f"☀️ Morning Briefing — {date_str}",
+        title=f"☀️ Morning Briefing — {date_str}{rank_title}",
         description="Here is your focus and financial outlook for today. Have a productive day!",
         color=discord.Color.orange(),
     )
@@ -259,7 +295,19 @@ def format_morning_briefing(
             inline=False,
         )
 
-    # 2. High Priority & Open Tasks
+    # 2. Savings Goals Trackers
+    if active_goals:
+        g_lines = []
+        for g in active_goals[:3]:
+            bar = render_progress_bar(g["current_amount"], g["target_amount"])
+            g_lines.append(f"• **{g['name']}:**\n  {bar} _(RM {g['remaining']:.2f} left)_")
+        embed.add_field(
+            name="🎯 Active Savings Goals",
+            value="\n".join(g_lines),
+            inline=False,
+        )
+
+    # 3. High Priority & Open Tasks
     if open_tasks:
         lines = []
         high_prio = [t for t in open_tasks if t.get("priority") == "HIGH"]
@@ -289,7 +337,7 @@ def format_morning_briefing(
             inline=False,
         )
 
-    # 3. Due Recurring Bills (Human-in-the-loop reminder)
+    # 4. Due Recurring Bills (Human-in-the-loop reminder)
     if due_bills:
         bill_lines = []
         for b in due_bills:
@@ -301,18 +349,18 @@ def format_morning_briefing(
             inline=False,
         )
 
-    # 4. 3-Day Upcoming Bill Warnings (Cash Flow Heads Up)
+    # 5. 3-Day Upcoming Bill Warnings
     if upcoming_bills:
         up_lines = []
         for b in upcoming_bills:
             up_lines.append(f"• **{b['name']}:** RM {b['amount']:.2f} _(in {b['due_in_days']} days — {b['due_date_str']})_")
         embed.add_field(
-            name=f"⏳ Upcoming Bills (Next 3 Days)",
+            name="⏳ Upcoming Bills (Next 3 Days)",
             value="\n".join(up_lines),
             inline=False,
         )
 
-    # 5. Monthly Budget Health
+    # 6. Monthly Budget Health
     if budget_status:
         b_lines = []
         for b in budget_status[:5]:
@@ -423,10 +471,13 @@ def format_live_dashboard(
     open_tasks: List[Dict[str, Any]],
     streak_info: Dict[str, Any],
     date_str: str,
+    active_goals: Optional[List[Dict[str, Any]]] = None,
+    rank_info: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build the single-pane-of-glass Live Dashboard with 1-tap in-place refresh."""
+    rank_badge = f" | {rank_info['title']}" if rank_info else ""
     embed = discord.Embed(
-        title=f"📌 Live Command Center — {date_str}",
+        title=f"📌 Live Command Center — {date_str}{rank_badge}",
         description="Your real-time financial, budget, and productivity status. Click **[🔄 Refresh]** anytime to update.",
         color=discord.Color.dark_teal(),
     )
@@ -455,7 +506,15 @@ def format_live_dashboard(
             allow_str = f"**RM {allow:.2f} / day** _(RM {rem:.2f} buffer across {days} days)_"
         embed.add_field(name="💡 Safe-to-Spend Runway", value=allow_str, inline=False)
 
-    # 3. Monthly Budgets
+    # 3. Savings Goals
+    if active_goals:
+        g_lines = []
+        for g in active_goals[:3]:
+            bar = render_progress_bar(g["current_amount"], g["target_amount"])
+            g_lines.append(f"• **{g['name']}:** {bar}")
+        embed.add_field(name="🎯 Savings Goals", value="\n".join(g_lines), inline=False)
+
+    # 4. Monthly Budgets
     if budget_status:
         b_lines = []
         for b in budget_status[:4]:
@@ -463,7 +522,7 @@ def format_live_dashboard(
             b_lines.append(f"• **{b['category']}:** {bar}")
         embed.add_field(name="📊 Budget Health", value="\n".join(b_lines), inline=False)
 
-    # 4. Top Priority Tasks
+    # 5. Top Priority Tasks
     if open_tasks:
         lines = []
         for t in open_tasks[:5]:
@@ -473,7 +532,7 @@ def format_live_dashboard(
     else:
         embed.add_field(name="📋 Tasks", value="🎉 All tasks completed!", inline=False)
 
-    # 5. Bills (Due Today or Next 3 Days)
+    # 6. Bills (Due Today or Next 3 Days)
     all_bills = due_bills + upcoming_bills
     if all_bills:
         bill_lines = []
@@ -485,8 +544,259 @@ def format_live_dashboard(
     # Footer
     streak_days = streak_info.get("streak_days", 0)
     completed_week = streak_info.get("completed_this_week", 0)
-    embed.set_footer(text=f"🔥 {streak_days}-Day Streak | {completed_week} tasks finished this week | Updated live")
+    next_m = rank_info.get("next_milestone", "") if rank_info else ""
+    embed.set_footer(text=f"🔥 {streak_days}-Day Streak | {completed_week} tasks finished this week | {next_m}")
     return embed
+
+
+def format_goals_overview(goals: List[Dict[str, Any]]) -> discord.Embed:
+    """Build dedicated Savings Goals overview embed."""
+    embed = discord.Embed(
+        title="🎯 Savings Goals Overview",
+        description="Dedicated asset accumulation funds. Regular spending does NOT deduct from these targets!",
+        color=discord.Color.gold(),
+    )
+    if not goals:
+        embed.description = "No active savings goals found. Create one by saying e.g. *'Create goal Japan Trip target RM 6000'*!"
+        return embed
+
+    for g in goals:
+        bar = render_progress_bar(g["current_amount"], g["target_amount"])
+        target_d = f" | Target Date: `{g['target_date']}`" if g.get("target_date") else ""
+        embed.add_field(
+            name=f"🏆 [ID: #{g['id']}] {g['name']}{target_d}",
+            value=f"{bar}\nRemaining: **RM {g['remaining']:.2f}**\n",
+            inline=False,
+        )
+    return embed
+
+
+def format_search_results(keyword: str, results: Dict[str, Any]) -> discord.Embed:
+    """Build keyword search and filter embed."""
+    expenses = results.get("expenses", [])
+    tasks = results.get("tasks", [])
+    total_spent = results.get("total_spent_on_matches", 0.0)
+
+    embed = discord.Embed(
+        title=f"🔍 Search Results for \"{keyword}\"",
+        color=discord.Color.blurple(),
+    )
+
+    if not expenses and not tasks:
+        embed.description = f"No matching expenses or tasks found for *'{keyword}'*."
+        return embed
+
+    if expenses:
+        exp_lines = []
+        for e in expenses[:10]:
+            note = f" ({e['note']})" if e.get("note") else ""
+            exp_lines.append(f"• `{e['created_at'][:10]}`: **RM {e['amount']:.2f}** — `{e['category']}`{note}")
+        embed.add_field(
+            name=f"💸 Matching Expenses (Total: RM {total_spent:.2f})",
+            value="\n".join(exp_lines),
+            inline=False,
+        )
+
+    if tasks:
+        task_lines = []
+        for t in tasks[:10]:
+            status_tag = "✅ DONE" if t["status"] == "DONE" else f"⏳ `[{t['priority']}]`"
+            task_lines.append(f"• `[#{t['id']}]` {status_tag} {t['description']}")
+        embed.add_field(
+            name=f"📋 Matching Tasks ({len(tasks)})",
+            value="\n".join(task_lines),
+            inline=False,
+        )
+
+    return embed
+
+
+def format_calendar_day_view(
+    target_date_str: str,
+    expenses: List[Dict[str, Any]],
+    total_spent: float,
+    open_tasks: List[Dict[str, Any]],
+) -> discord.Embed:
+    """Build 1-day calendar inspector embed."""
+    embed = discord.Embed(
+        title=f"📅 Day Inspector — {target_date_str}",
+        color=discord.Color.blue(),
+    )
+    if expenses:
+        lines = [f"• **RM {e['amount']:.2f}** — `{e['category']}` ({e.get('note') or 'No note'})" for e in expenses]
+        embed.add_field(name=f"💸 Expenses (Total: RM {total_spent:.2f})", value="\n".join(lines[:12]), inline=False)
+    else:
+        embed.add_field(name="💸 Expenses", value="No expenses on this date.", inline=False)
+
+    matching_tasks = [t for t in open_tasks if t.get("due_date") == target_date_str]
+    if matching_tasks:
+        t_lines = [f"• `[#{t['id']} | {t['priority']}]` {t['description']}" for t in matching_tasks]
+        embed.add_field(name=f"📋 Tasks Due on this Day ({len(matching_tasks)})", value="\n".join(t_lines), inline=False)
+    else:
+        embed.add_field(name="📋 Tasks Due", value="No tasks due on this specific date.", inline=False)
+
+    return embed
+
+
+def generate_html_report(
+    month_str: str,
+    expenses: List[Dict[str, Any]],
+    total_spent: float,
+    proportions: List[Dict[str, Any]],
+    budget_status: List[Dict[str, Any]],
+    open_tasks: List[Dict[str, Any]],
+    completed_tasks: List[Dict[str, Any]],
+    goals: List[Dict[str, Any]],
+    streak_info: Dict[str, Any],
+    rank_info: Dict[str, Any],
+) -> str:
+    """Generate a responsive, standalone dark-mode HTML executive report."""
+    prop_rows = "".join(
+        [
+            f"<tr><td>{p['category']}</td><td>RM {p['amount']:.2f}</td><td>{p['percentage']}%</td></tr>"
+            for p in proportions
+        ]
+    ) or "<tr><td colspan='3'>No expenses logged this month.</td></tr>"
+
+    budget_rows = "".join(
+        [
+            f"<tr><td>{b['category']}</td><td>RM {b['spent']:.2f}</td><td>RM {b['limit']:.2f}</td><td>{b['percentage']}%</td></tr>"
+            for b in budget_status
+        ]
+    ) or "<tr><td colspan='4'>No budgets configured.</td></tr>"
+
+    goal_rows = "".join(
+        [
+            f"<tr><td>{g['name']}</td><td>RM {g['current_amount']:.2f}</td><td>RM {g['target_amount']:.2f}</td><td>{g['percentage']}%</td></tr>"
+            for g in goals
+        ]
+    ) or "<tr><td colspan='4'>No active savings goals.</td></tr>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perlica Executive Financial & Productivity Report — {month_str}</title>
+    <style>
+        body {{
+            background-color: #0e1117;
+            color: #e0e6ed;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 40px 20px;
+        }}
+        .container {{
+            max-width: 900px;
+            margin: auto;
+        }}
+        h1, h2, h3 {{
+            color: #58a6ff;
+        }}
+        .card-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }}
+        .card {{
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+        }}
+        .card-val {{
+            font-size: 26px;
+            font-weight: bold;
+            color: #58a6ff;
+            margin-top: 10px;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+            background-color: #161b22;
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        th, td {{
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #30363d;
+        }}
+        th {{
+            background-color: #21262d;
+            color: #8b949e;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 4px 10px;
+            background: #238636;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }}
+        .footer {{
+            text-align: center;
+            color: #8b949e;
+            font-size: 13px;
+            margin-top: 50px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Perlica Executive Report</h1>
+        <p>Period: <strong>{month_str}</strong> | Rank: <span class="badge">{rank_info.get('title', 'Apprentice')}</span></p>
+
+        <div class="card-grid">
+            <div class="card">
+                <div>Total Spent</div>
+                <div class="card-val">RM {total_spent:.2f}</div>
+            </div>
+            <div class="card">
+                <div>Logging Streak</div>
+                <div class="card-val">🔥 {streak_info.get('streak_days', 0)} Days</div>
+            </div>
+            <div class="card">
+                <div>Tasks Crushed</div>
+                <div class="card-val">✅ {len(completed_tasks)}</div>
+            </div>
+            <div class="card">
+                <div>Active Goals</div>
+                <div class="card-val">🏆 {len(goals)}</div>
+            </div>
+        </div>
+
+        <h2>💸 Spending by Category</h2>
+        <table>
+            <thead><tr><th>Category</th><th>Total Amount</th><th>Share</th></tr></thead>
+            <tbody>{prop_rows}</tbody>
+        </table>
+
+        <h2>💳 Monthly Budget Performance</h2>
+        <table>
+            <thead><tr><th>Category</th><th>Spent</th><th>Limit</th><th>Utilization</th></tr></thead>
+            <tbody>{budget_rows}</tbody>
+        </table>
+
+        <h2>🎯 Dedicated Savings Goals</h2>
+        <table>
+            <thead><tr><th>Goal Name</th><th>Current Saved</th><th>Target</th><th>Progress</th></tr></thead>
+            <tbody>{goal_rows}</tbody>
+        </table>
+
+        <div class="footer">
+            Generated autonomously by Perlica Personal Assistant on {month_str}
+        </div>
+    </div>
+</body>
+</html>
+"""
 
 
 def format_weekly_executive_review(
@@ -766,12 +1076,24 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
+        name="🎯 Savings Goals (Never deducted by expenses)",
+        value=(
+            "• `Create goal Japan Trip target RM 6000`\n"
+            "• `Saved RM 500 for Japan Trip`\n"
+            "• `/goals` or `goals` *(View goal progress meters)*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="⚡ Interactive Controls & Modals",
         value=(
             "• 📌 `dashboard` or `/dashboard` *(Pinned live command center)*\n"
             "• ✏️ Click **[Edit]** on any preview for a **Popup Edit Modal**\n"
             "• ⚡ `presets` or `/presets` *(1-tap common expenses)*\n"
-            "• ⏰ `snooze <id>` *(Postpone a task +1 day or to weekend)*"
+            "• 📅 `calendar` *(7-Day Day Inspector)*\n"
+            "• 🔍 `find <keyword>` *(Search expenses and tasks)*\n"
+            "• 📊 `/report` *(Download HTML Financial Report)*"
         ),
         inline=False,
     )
@@ -804,15 +1126,6 @@ def format_help_guide() -> discord.Embed:
             "• `Create task 'App Launch' with 3 phases: 1. Wireframes, 2. Design, 3. Testing`\n"
             "• `What are my open tasks?` *(Native 1-tap select dropdown)*\n"
             "• `Done task #1`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="📄 CSV Export & Undo",
-        value=(
-            "• `Export this month's expenses` *(Instant .csv download)*\n"
-            "• `undo` *(Reverse the last entry)*"
         ),
         inline=False,
     )
