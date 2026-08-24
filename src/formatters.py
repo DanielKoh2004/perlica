@@ -36,6 +36,22 @@ def render_sparkline(values: List[float]) -> str:
     return "`[" + "".join(chars) + "]`"
 
 
+def render_category_heatmap(proportions: List[Dict[str, Any]], bar_length: int = 10) -> str:
+    """
+    Render a monospaced ASCII proportion heatmap.
+    Guaranteed uniform pixel alignment on iOS, Android, and Desktop.
+    """
+    if not proportions:
+        return "No categorized expenses recorded."
+    lines = []
+    for item in proportions[:5]:
+        pct = item["percentage"]
+        filled = int((pct / 100.0) * bar_length)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        lines.append(f"`[{bar}]` **{pct}%** {item['category']} _(RM {item['amount']:.2f})_")
+    return "\n".join(lines)
+
+
 def format_action_preview(
     payload: ExtractedPayload,
     expenses: List[Dict[str, Any]],
@@ -217,6 +233,7 @@ def format_morning_briefing(
     budget_status: List[Dict[str, Any]],
     date_str: str,
     upcoming_bills: Optional[List[Dict[str, Any]]] = None,
+    safe_allowance: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build a sharp morning kickoff embed at 08:30."""
     embed = discord.Embed(
@@ -225,7 +242,24 @@ def format_morning_briefing(
         color=discord.Color.orange(),
     )
 
-    # 1. High Priority & Open Tasks
+    # 1. Safe-to-Spend Daily Allowance (Proactive Burn Rate Gauge)
+    if safe_allowance and safe_allowance.get("has_budget"):
+        if safe_allowance.get("is_overspent"):
+            over = safe_allowance.get("overspent_by", 0.0)
+            allow_text = f"🚨 **Monthly Limit Exceeded by RM {over:.2f}!**\nSafe Daily Allowance: **RM 0.00 / day**."
+        else:
+            allow = safe_allowance.get("safe_daily_allowance", 0.0)
+            days = safe_allowance.get("days_remaining", 1)
+            rem = safe_allowance.get("remaining_budget", 0.0)
+            allow_text = f"💳 **Safe Daily Allowance:** **RM {allow:.2f} / day**\n_(RM {rem:.2f} remaining over {days} days to hit your target)_"
+
+        embed.add_field(
+            name="💡 Spending Runway Gauge",
+            value=allow_text,
+            inline=False,
+        )
+
+    # 2. High Priority & Open Tasks
     if open_tasks:
         lines = []
         high_prio = [t for t in open_tasks if t.get("priority") == "HIGH"]
@@ -255,7 +289,7 @@ def format_morning_briefing(
             inline=False,
         )
 
-    # 2. Due Recurring Bills (Human-in-the-loop reminder)
+    # 3. Due Recurring Bills (Human-in-the-loop reminder)
     if due_bills:
         bill_lines = []
         for b in due_bills:
@@ -267,7 +301,7 @@ def format_morning_briefing(
             inline=False,
         )
 
-    # 3. 3-Day Upcoming Bill Warnings (Cash Flow Heads Up)
+    # 4. 3-Day Upcoming Bill Warnings (Cash Flow Heads Up)
     if upcoming_bills:
         up_lines = []
         for b in upcoming_bills:
@@ -278,7 +312,7 @@ def format_morning_briefing(
             inline=False,
         )
 
-    # 4. Monthly Budget Health
+    # 5. Monthly Budget Health
     if budget_status:
         b_lines = []
         for b in budget_status[:5]:
@@ -300,6 +334,7 @@ def format_daily_summary(
     date_str: str,
     spending_pace: Optional[Dict[str, Any]] = None,
     streak_info: Optional[Dict[str, Any]] = None,
+    category_proportions: Optional[List[Dict[str, Any]]] = None,
 ) -> discord.Embed:
     """Build a rich embed for the automated daily summary at 22:00."""
     embed = discord.Embed(
@@ -307,7 +342,7 @@ def format_daily_summary(
         color=discord.Color.gold(),
     )
 
-    # Spending Section
+    # Spending Section & Category Proportion ASCII Heatmap
     if expenses:
         cat_map: Dict[str, float] = {}
         for exp in expenses:
@@ -320,6 +355,14 @@ def format_daily_summary(
             value="\n".join(breakdown),
             inline=False,
         )
+
+        if category_proportions:
+            heatmap_text = render_category_heatmap(category_proportions)
+            embed.add_field(
+                name="📊 Category Proportions",
+                value=heatmap_text,
+                inline=False,
+            )
     else:
         embed.add_field(
             name="💸 Total Spent: RM 0.00",
@@ -367,6 +410,82 @@ def format_daily_summary(
             text=f"🔥 {streak_info['streak_days']}-Day Logging Streak | {streak_info.get('completed_this_week', 0)} tasks finished this week!"
         )
 
+    return embed
+
+
+def format_live_dashboard(
+    today_spent: float,
+    pace_data: Dict[str, Any],
+    budget_status: List[Dict[str, Any]],
+    safe_allowance: Dict[str, Any],
+    due_bills: List[Dict[str, Any]],
+    upcoming_bills: List[Dict[str, Any]],
+    open_tasks: List[Dict[str, Any]],
+    streak_info: Dict[str, Any],
+    date_str: str,
+) -> discord.Embed:
+    """Build the single-pane-of-glass Live Dashboard with 1-tap in-place refresh."""
+    embed = discord.Embed(
+        title=f"📌 Live Command Center — {date_str}",
+        description="Your real-time financial, budget, and productivity status. Click **[🔄 Refresh]** anytime to update.",
+        color=discord.Color.dark_teal(),
+    )
+
+    # 1. Spending & 7-Day Sparkline
+    sparkline = render_sparkline(pace_data.get("daily_series", []))
+    avg = pace_data.get("seven_day_avg", 0.0)
+    diff = pace_data.get("diff_pct", 0.0)
+    sign = "+" if diff > 0 else ""
+    indicator = "🔴" if diff > 15.0 else ("🟢" if diff < -15.0 else "🟡")
+    embed.add_field(
+        name=f"💸 Today's Spending: RM {today_spent:.2f}",
+        value=f"7-Day Avg: **RM {avg:.2f}** ({sign}{diff}% {indicator})\nTrend: {sparkline}",
+        inline=False,
+    )
+
+    # 2. Safe-to-Spend Allowance
+    if safe_allowance.get("has_budget"):
+        if safe_allowance.get("is_overspent"):
+            over = safe_allowance.get("overspent_by", 0.0)
+            allow_str = f"🚨 **Overspent by RM {over:.2f}!** Safe Allowance: **RM 0.00 / day**"
+        else:
+            allow = safe_allowance.get("safe_daily_allowance", 0.0)
+            days = safe_allowance.get("days_remaining", 1)
+            rem = safe_allowance.get("remaining_budget", 0.0)
+            allow_str = f"**RM {allow:.2f} / day** _(RM {rem:.2f} buffer across {days} days)_"
+        embed.add_field(name="💡 Safe-to-Spend Runway", value=allow_str, inline=False)
+
+    # 3. Monthly Budgets
+    if budget_status:
+        b_lines = []
+        for b in budget_status[:4]:
+            bar = render_progress_bar(b["spent"], b["limit"])
+            b_lines.append(f"• **{b['category']}:** {bar}")
+        embed.add_field(name="📊 Budget Health", value="\n".join(b_lines), inline=False)
+
+    # 4. Top Priority Tasks
+    if open_tasks:
+        lines = []
+        for t in open_tasks[:5]:
+            due = f" _(Due: {t['due_date']})_" if t.get("due_date") else ""
+            lines.append(f"• `[#{t['id']} | {t['priority']}]` {t['description']}{due}")
+        embed.add_field(name=f"📋 Focus Tasks ({len(open_tasks)} total)", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="📋 Tasks", value="🎉 All tasks completed!", inline=False)
+
+    # 5. Bills (Due Today or Next 3 Days)
+    all_bills = due_bills + upcoming_bills
+    if all_bills:
+        bill_lines = []
+        for b in all_bills[:4]:
+            tag = "TODAY" if b in due_bills else f"in {b.get('due_in_days', 1)}d"
+            bill_lines.append(f"• **{b['name']}** (RM {b['amount']:.2f}) — `{tag}`")
+        embed.add_field(name="🔔 Active Bill Reminders", value="\n".join(bill_lines), inline=False)
+
+    # Footer
+    streak_days = streak_info.get("streak_days", 0)
+    completed_week = streak_info.get("completed_this_week", 0)
+    embed.set_footer(text=f"🔥 {streak_days}-Day Streak | {completed_week} tasks finished this week | Updated live")
     return embed
 
 
@@ -452,6 +571,36 @@ def format_task_selector_embed(open_tasks: List[Dict[str, Any]]) -> discord.Embe
     embed.add_field(
         name=f"Tasks List ({showing_count})",
         value="\n".join(lines),
+        inline=False,
+    )
+    return embed
+
+
+def format_task_snooze_embed(task: Dict[str, Any]) -> discord.Embed:
+    """Build a task snooze / postpone control embed."""
+    embed = discord.Embed(
+        title=f"⏰ Snooze Task #{task['id']}",
+        description=f"**`[{task['priority']}]` {task['description']}**\nCurrent Due Date: **{task.get('due_date') or 'None'}**\n\nChoose an action below:",
+        color=discord.Color.orange(),
+    )
+    return embed
+
+
+def format_presets_embed() -> discord.Embed:
+    """Build a 1-tap quick log presets embed."""
+    embed = discord.Embed(
+        title="⚡ 1-Tap Quick Log Presets",
+        description="Tap any button below to instantly trigger a 3-button confirmation preview for your common everyday entries!",
+        color=discord.Color.teal(),
+    )
+    embed.add_field(
+        name="Available Quick Presets",
+        value=(
+            "• 🍽️ **Mamak Lunch (RM 15.00)** — `Food & Dining`\n"
+            "• 🚗 **TNG Card Reload (RM 50.00)** — `Transport`\n"
+            "• ☕ **Kopitiam Coffee (RM 12.00)** — `Food & Dining`\n"
+            "• 🛒 **99 Speedmart (RM 30.00)** — `Groceries`"
+        ),
         inline=False,
     )
     return embed
@@ -612,8 +761,19 @@ def format_help_guide() -> discord.Embed:
     """Build a comprehensive guide embed showing how to interact with the bot."""
     embed = discord.Embed(
         title="📖 Perlica Personal Agent — Quick Start Guide",
-        description="Just send natural sentences, voice notes, or receipt photos directly in this DM!",
+        description="Just send natural sentences, voice notes, receipt photos, or use `/` slash commands!",
         color=discord.Color.teal(),
+    )
+
+    embed.add_field(
+        name="⚡ Interactive Controls & Modals",
+        value=(
+            "• 📌 `dashboard` or `/dashboard` *(Pinned live command center)*\n"
+            "• ✏️ Click **[Edit]** on any preview for a **Popup Edit Modal**\n"
+            "• ⚡ `presets` or `/presets` *(1-tap common expenses)*\n"
+            "• ⏰ `snooze <id>` *(Postpone a task +1 day or to weekend)*"
+        ),
+        inline=False,
     )
 
     embed.add_field(
@@ -629,22 +789,11 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
-        name="📊 Budget Limits & Progress Bars",
+        name="📊 Budget Limits & Safe Allowance",
         value=(
             "• `Set monthly food budget to RM 800`\n"
-            "• `Set monthly entertainment budget to RM 200`\n"
-            "• `Check my budget status`"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="🔔 Recurring Bills & Briefings",
-        value=(
-            "• `Add recurring bill: Unifi RM 139 on the 1st`\n"
-            "• `edit the recurring buy to 400`\n"
-            "• ☀️ *Morning Briefing at 8:30 AM (with 3-day heads-up)*\n"
-            "• 🏆 *Sunday Executive Review at 8:00 PM*"
+            "• `Check my budget status`\n"
+            "• ☀️ *Morning Briefing calculates your Safe-to-Spend runway!*"
         ),
         inline=False,
     )

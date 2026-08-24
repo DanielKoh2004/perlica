@@ -1,7 +1,7 @@
 import os
 import io
 import csv
-from datetime import date
+from datetime import date, datetime
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Tuple, Any, AsyncGenerator
@@ -791,7 +791,7 @@ class DatabaseManager:
 
     async def get_weekly_review_data(self, start_date_str: str, end_date_str: str) -> Dict[str, Any]:
         """Fetch weekly expenditure breakdown, task completion ratio, and budget health."""
-        expenses, total_spent, category_breakdown = await db.get_expenses_summary(start_date_str, end_date_str)
+        expenses, total_spent, category_breakdown = await self.get_expenses_summary(start_date_str, end_date_str)
         
         async with self.get_connection() as conn:
             async with conn.execute(
@@ -818,3 +818,103 @@ class DatabaseManager:
             "open_tasks_count": len(open_tasks),
             "budget_status": budget_status,
         }
+
+    async def get_safe_daily_allowance(self, now_dt: datetime) -> Dict[str, Any]:
+        """
+        Calculate remaining days in current month and compute Safe-to-Spend daily allowance.
+        Safeguards:
+        - Days left includes today: (last_day - current_day) + 1, so days_remaining is never 0.
+        - Negative remaining budget returns allowance 0.0 with explicit overspent_by amount.
+        """
+        import calendar
+
+        year = now_dt.year
+        month = now_dt.month
+        current_day = now_dt.day
+        month_str = now_dt.strftime("%Y-%m")
+        _, total_days = calendar.monthrange(year, month)
+        days_remaining = max((total_days - current_day) + 1, 1)
+
+        budgets = await self.get_budgets()
+        total_budget = sum(budgets.values())
+
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT SUM(amount) as total_spent FROM expenses
+                WHERE substr(created_at, 1, 7) = ?
+                """,
+                (month_str,),
+            ) as cur:
+                row = await cur.fetchone()
+                total_spent = row["total_spent"] if row and row["total_spent"] else 0.0
+
+        if total_budget <= 0:
+            return {
+                "has_budget": False,
+                "days_remaining": days_remaining,
+                "total_budget": 0.0,
+                "total_spent": total_spent,
+                "remaining_budget": 0.0,
+                "safe_daily_allowance": 0.0,
+                "is_overspent": False,
+            }
+
+        remaining_budget = round(total_budget - total_spent, 2)
+        if remaining_budget <= 0:
+            return {
+                "has_budget": True,
+                "days_remaining": days_remaining,
+                "total_budget": total_budget,
+                "total_spent": total_spent,
+                "remaining_budget": remaining_budget,
+                "overspent_by": abs(remaining_budget),
+                "safe_daily_allowance": 0.0,
+                "is_overspent": True,
+            }
+
+        safe_daily_allowance = round(remaining_budget / days_remaining, 2)
+        return {
+            "has_budget": True,
+            "days_remaining": days_remaining,
+            "total_budget": total_budget,
+            "total_spent": total_spent,
+            "remaining_budget": remaining_budget,
+            "safe_daily_allowance": safe_daily_allowance,
+            "is_overspent": False,
+        }
+
+    async def get_category_proportions(
+        self, start_date_str: Optional[str] = None, end_date_str: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch category spending totals and percentage shares sorted descending."""
+        _, total_spent, category_breakdown = await self.get_expenses_summary(start_date_str, end_date_str)
+        proportions = []
+        if total_spent <= 0:
+            return []
+
+        for cat, amt in category_breakdown.items():
+            pct = round((amt / total_spent) * 100, 1)
+            proportions.append({"category": cat, "amount": amt, "percentage": pct})
+
+        return sorted(proportions, key=lambda x: x["amount"], reverse=True)
+
+    async def snooze_task(self, task_id: int, days_to_add: int = 1) -> Optional[Dict[str, Any]]:
+        """Postpone a task's due date by N days."""
+        from datetime import datetime, timedelta
+
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return None
+
+        current_due = task.get("due_date")
+        if current_due:
+            try:
+                base_dt = datetime.strptime(current_due, "%Y-%m-%d").date()
+            except ValueError:
+                base_dt = datetime.now().date()
+        else:
+            base_dt = datetime.now().date()
+
+        new_due_str = (base_dt + timedelta(days=days_to_add)).strftime("%Y-%m-%d")
+        return await self.update_task(task_id, due_date=new_due_str)

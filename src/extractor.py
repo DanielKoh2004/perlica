@@ -34,6 +34,42 @@ class ExpenseCategory(str, Enum):
     OTHER = "Other"
 
 
+def resolve_category_from_text(raw_input: Optional[str]) -> ExpenseCategory:
+    """
+    Fuzzy-map freeform user input (from Modals, shortcuts, or quick edits) to a valid ExpenseCategory.
+    Handles Malaysian slang (e.g. 'makan', 'petrol', 'tng', 'speedmart') gracefully.
+    """
+    if not raw_input:
+        return ExpenseCategory.OTHER
+
+    val = raw_input.strip().lower()
+
+    # Exact or enum matching
+    for cat in ExpenseCategory:
+        if val == cat.value.lower() or val == cat.name.lower():
+            return cat
+
+    # Synonym Mapping
+    if any(w in val for w in ["food", "dining", "makan", "lunch", "dinner", "breakfast", "cafe", "coffee", "mamak", "kopi", "restaurant", "grabfood", "foodpanda"]):
+        return ExpenseCategory.FOOD
+    if any(w in val for w in ["transport", "tng", "touch", "petrol", "fuel", "ron95", "ron97", "grab", "toll", "parking", "lrt", "mrt", "monorail"]):
+        return ExpenseCategory.TRANSPORT
+    if any(w in val for w in ["grocery", "groceries", "speedmart", "99", "lotus", "jaya", "pasar", "supermarket", "mart"]):
+        return ExpenseCategory.GROCERIES
+    if any(w in val for w in ["utilit", "bill", "tnb", "unifi", "time", "maxis", "celcom", "digi", "umobile", "water", "syabas", "indah water", "electric"]):
+        return ExpenseCategory.UTILITIES
+    if any(w in val for w in ["game", "steam", "welkin", "pass", "nitro", "spotify", "netflix", "youtube", "cinema", "movie", "gacha", "entertainment"]):
+        return ExpenseCategory.ENTERTAINMENT
+    if any(w in val for w in ["shop", "shopee", "lazada", "taobao", "uniqlo", "diy", "clothes", "gadget", "amazon"]):
+        return ExpenseCategory.SHOPPING
+    if any(w in val for w in ["health", "medical", "doctor", "clinic", "klinik", "hospital", "pharmacy", "watsons", "guardian", "gym", "supplement"]):
+        return ExpenseCategory.HEALTH
+    if any(w in val for w in ["invest", "saving", "s&p", "stock", "etf", "crypto", "bitcoin", "eth", "asb", "epf", "kwsp", "gold", "stashaway", "versa"]):
+        return ExpenseCategory.INVESTMENT
+
+    return ExpenseCategory.OTHER
+
+
 class ExpenseItem(BaseModel):
     amount: float = Field(
         ...,

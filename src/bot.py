@@ -1,14 +1,24 @@
 import io
+import re
 import logging
 import datetime
 from typing import Optional, List, Dict, Any, Callable
 from datetime import timedelta
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from src.config import settings
 from src.database import DatabaseManager
-from src.extractor import ExtractionEngine, ExtractedPayload
+from src.extractor import (
+    ExtractionEngine,
+    ExtractedPayload,
+    ExpenseItem,
+    TaskItem,
+    ExpenseCategory,
+    TaskPriority,
+    resolve_category_from_text,
+)
 from src.formatters import (
     format_action_preview,
     format_action_confirmation,
@@ -20,6 +30,9 @@ from src.formatters import (
     format_help_guide,
     format_weekly_executive_review,
     format_task_selector_embed,
+    format_live_dashboard,
+    format_task_snooze_embed,
+    format_presets_embed,
 )
 
 logging.basicConfig(
@@ -37,46 +50,294 @@ db = DatabaseManager(settings.DATABASE_PATH)
 extractor = ExtractionEngine(settings.GROQ_API_KEY, settings.GROQ_MODEL)
 
 
+# --- NUMERIC & CATEGORY HELPERS ---
+
+def clean_float_input(val_str: Optional[str], default: float = 0.0) -> float:
+    """Safely strip RM, $, commas, and whitespace from user input and parse as float."""
+    if not val_str:
+        return default
+    cleaned = re.sub(r"[^\d.]", "", val_str)
+    try:
+        return float(cleaned) if cleaned else default
+    except ValueError:
+        return default
+
+
+# --- NATIVE DISCORD POPUP EDIT MODALS ---
+
+class ExpenseEditModal(discord.ui.Modal, title="✏️ Edit Expense Entry"):
+    """Popup form modal to modify detected expense before confirming."""
+
+    amount_input = discord.ui.TextInput(
+        label="Amount (RM / Number)",
+        placeholder="e.g. 15.50",
+        required=True,
+        max_length=20,
+    )
+    category_input = discord.ui.TextInput(
+        label="Category (e.g. Food, Transport, Shopping)",
+        placeholder="Food & Dining, Transport, Groceries, etc.",
+        required=True,
+        max_length=50,
+    )
+    note_input = discord.ui.TextInput(
+        label="Description / Vendor Note",
+        placeholder="e.g. Chicken rice lunch",
+        required=False,
+        max_length=150,
+    )
+
+    def __init__(self, payload: ExtractedPayload, parent_view: "ActionIngestionView"):
+        super().__init__()
+        self.payload = payload
+        self.parent_view = parent_view
+
+        if payload.expenses:
+            exp = payload.expenses[0]
+            self.amount_input.default = f"{exp.amount:.2f}"
+            self.category_input.default = exp.category.value if hasattr(exp.category, "value") else str(exp.category)
+            self.note_input.default = exp.note or ""
+
+    async def on_submit(self, interaction: discord.Interaction):
+        amt = clean_float_input(self.amount_input.value, default=0.0)
+        cat = resolve_category_from_text(self.category_input.value)
+        note = self.note_input.value.strip() or None
+
+        if self.payload.expenses:
+            self.payload.expenses[0].amount = amt
+            self.payload.expenses[0].category = cat
+            self.payload.expenses[0].note = note
+        else:
+            self.payload.expenses.append(ExpenseItem(amount=amt, category=cat, note=note))
+
+        expenses_preview = [
+            {
+                "amount": e.amount,
+                "category": e.category.value if hasattr(e.category, "value") else str(e.category),
+                "note": e.note,
+                "occurred_date": e.occurred_date,
+            }
+            for e in self.payload.expenses
+        ]
+        tasks_preview = [
+            {
+                "description": t.description,
+                "priority": t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+                "due_date": t.due_date,
+                "due_time": t.due_time,
+                "phases": t.phases,
+            }
+            for t in self.payload.new_tasks
+        ]
+
+        new_embed = format_action_preview(
+            payload=self.payload,
+            expenses=expenses_preview,
+            tasks=tasks_preview,
+            completed_task_ids=self.payload.completed_task_ids,
+        )
+        await interaction.response.edit_message(
+            content="✏️ *Preview updated from your popup edits:*",
+            embed=new_embed,
+            view=self.parent_view,
+        )
+
+
+class TaskEditModal(discord.ui.Modal, title="✏️ Edit Task Entry"):
+    """Popup form modal to modify detected task before confirming."""
+
+    desc_input = discord.ui.TextInput(
+        label="Task Description",
+        placeholder="e.g. Finish research paper",
+        required=True,
+        max_length=200,
+    )
+    priority_input = discord.ui.TextInput(
+        label="Priority (LOW, MEDIUM, HIGH)",
+        placeholder="LOW, MEDIUM, or HIGH",
+        required=False,
+        max_length=10,
+    )
+    due_date_input = discord.ui.TextInput(
+        label="Due Date (YYYY-MM-DD)",
+        placeholder="e.g. 2026-08-30",
+        required=False,
+        max_length=20,
+    )
+
+    def __init__(self, payload: ExtractedPayload, parent_view: "ActionIngestionView"):
+        super().__init__()
+        self.payload = payload
+        self.parent_view = parent_view
+
+        if payload.new_tasks:
+            t = payload.new_tasks[0]
+            self.desc_input.default = t.description
+            self.priority_input.default = t.priority.value if hasattr(t.priority, "value") else str(t.priority)
+            self.due_date_input.default = t.due_date or ""
+
+    async def on_submit(self, interaction: discord.Interaction):
+        desc = self.desc_input.value.strip()
+        prio_str = self.priority_input.value.strip().upper()
+        prio = TaskPriority.HIGH if prio_str == "HIGH" else (TaskPriority.LOW if prio_str == "LOW" else TaskPriority.MEDIUM)
+        due = self.due_date_input.value.strip() or None
+
+        if self.payload.new_tasks:
+            self.payload.new_tasks[0].description = desc
+            self.payload.new_tasks[0].priority = prio
+            self.payload.new_tasks[0].due_date = due
+        else:
+            self.payload.new_tasks.append(TaskItem(description=desc, priority=prio, due_date=due))
+
+        expenses_preview = [
+            {
+                "amount": e.amount,
+                "category": e.category.value if hasattr(e.category, "value") else str(e.category),
+                "note": e.note,
+                "occurred_date": e.occurred_date,
+            }
+            for e in self.payload.expenses
+        ]
+        tasks_preview = [
+            {
+                "description": t.description,
+                "priority": t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+                "due_date": t.due_date,
+                "due_time": t.due_time,
+                "phases": t.phases,
+            }
+            for t in self.payload.new_tasks
+        ]
+
+        new_embed = format_action_preview(
+            payload=self.payload,
+            expenses=expenses_preview,
+            tasks=tasks_preview,
+            completed_task_ids=self.payload.completed_task_ids,
+        )
+        await interaction.response.edit_message(
+            content="✏️ *Preview updated from your popup edits:*",
+            embed=new_embed,
+            view=self.parent_view,
+        )
+
+
+class BillEditModal(discord.ui.Modal, title="✏️ Edit Recurring Bill"):
+    """Popup form modal to modify recurring bill before confirming."""
+
+    name_input = discord.ui.TextInput(
+        label="Bill / Investment Name",
+        placeholder="e.g. Unifi, Netflix, S&P500",
+        required=True,
+        max_length=100,
+    )
+    amount_input = discord.ui.TextInput(
+        label="Monthly Amount (RM)",
+        placeholder="e.g. 100.00",
+        required=True,
+        max_length=20,
+    )
+    category_input = discord.ui.TextInput(
+        label="Category",
+        placeholder="Utilities & Bills, Investments & Savings, etc.",
+        required=False,
+        max_length=50,
+    )
+    day_input = discord.ui.TextInput(
+        label="Day of Month (1-31)",
+        placeholder="e.g. 27",
+        required=True,
+        max_length=4,
+    )
+
+    def __init__(self, payload: ExtractedPayload, parent_view: "ActionIngestionView"):
+        super().__init__()
+        self.payload = payload
+        self.parent_view = parent_view
+
+        self.name_input.default = payload.add_bill_name or ""
+        self.amount_input.default = f"{payload.add_bill_amount:.2f}" if payload.add_bill_amount is not None else ""
+        self.category_input.default = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
+        self.day_input.default = str(payload.add_bill_day or 1)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.payload.add_bill_name = self.name_input.value.strip()
+        self.payload.add_bill_amount = clean_float_input(self.amount_input.value, default=0.0)
+        self.payload.add_bill_category = resolve_category_from_text(self.category_input.value)
+        try:
+            self.payload.add_bill_day = max(1, min(31, int(self.day_input.value.strip())))
+        except ValueError:
+            self.payload.add_bill_day = 1
+
+        expenses_preview = [
+            {
+                "amount": e.amount,
+                "category": e.category.value if hasattr(e.category, "value") else str(e.category),
+                "note": e.note,
+                "occurred_date": e.occurred_date,
+            }
+            for e in self.payload.expenses
+        ]
+        tasks_preview = [
+            {
+                "description": t.description,
+                "priority": t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+                "due_date": t.due_date,
+                "due_time": t.due_time,
+                "phases": t.phases,
+            }
+            for t in self.payload.new_tasks
+        ]
+
+        new_embed = format_action_preview(
+            payload=self.payload,
+            expenses=expenses_preview,
+            tasks=tasks_preview,
+            completed_task_ids=self.payload.completed_task_ids,
+        )
+        await interaction.response.edit_message(
+            content="✏️ *Preview updated from your popup edits:*",
+            embed=new_embed,
+            view=self.parent_view,
+        )
+
+
 # --- INTERACTIVE DISCORD UI VIEWS ---
 
 class ActionIngestionView(discord.ui.View):
-    """3-button interactive view: Confirm, Edit, or Reject new entries."""
+    """3-button interactive view: Confirm, Edit Modal, or Reject new entries."""
 
     def __init__(
         self,
         on_confirm: Callable[[discord.Interaction], Any],
-        on_edit: Callable[[discord.Interaction], Any],
-        on_reject: Callable[[discord.Interaction], Any],
-        timeout: float = 180.0,
+        payload: ExtractedPayload,
+        timeout: float = 300.0,
     ):
         super().__init__(timeout=timeout)
         self.on_confirm = on_confirm
-        self.on_edit = on_edit
-        self.on_reject = on_reject
+        self.payload = payload
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅", custom_id="btn_confirm_ingest")
-    async def confirm_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
         await self.on_confirm(interaction)
 
     @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id="btn_edit_ingest")
-    async def edit_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        for child in self.children:
-            child.disabled = True
-        await self.on_edit(interaction)
+    async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Open appropriate native Discord popup modal
+        if self.payload.add_bill_name or self.payload.add_bill_amount is not None:
+            await interaction.response.send_modal(BillEditModal(self.payload, self))
+        elif self.payload.new_tasks and not self.payload.expenses:
+            await interaction.response.send_modal(TaskEditModal(self.payload, self))
+        else:
+            await interaction.response.send_modal(ExpenseEditModal(self.payload, self))
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌", custom_id="btn_reject_ingest")
-    async def reject_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
-        await self.on_reject(interaction)
+        await interaction.response.edit_message(content="❌ Entry discarded. Nothing was saved.", embed=None, view=None)
 
 
 class ConfirmActionView(discord.ui.View):
@@ -93,32 +354,25 @@ class ConfirmActionView(discord.ui.View):
         self.on_cancel = on_cancel
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅", custom_id="btn_confirm_action")
-    async def confirm_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
         await self.on_confirm(interaction)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌", custom_id="btn_cancel_action")
-    async def cancel_button(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
         if self.on_cancel:
             await self.on_cancel(interaction)
         else:
-            await interaction.response.edit_message(
-                content="❌ Action cancelled.", embed=None, view=None
-            )
+            await interaction.response.edit_message(content="❌ Action cancelled.", embed=None, view=None)
 
 
 class TaskSelectMenu(discord.ui.Select):
-    """Native Discord Select Menu for 1-tap batch task completion (strictly capped to top 25)."""
+    """Native Discord Select Menu for 1-tap batch task completion (capped to top 25)."""
 
     def __init__(self, open_tasks: List[Dict[str, Any]]):
-        # Strict safeguard: Discord API hard-limits select menus to 25 options
         capped_tasks = open_tasks[:25]
         options = []
         for t in capped_tasks:
@@ -174,8 +428,58 @@ class TaskMultiSelectView(discord.ui.View):
             self.add_item(TaskSelectMenu(open_tasks))
 
 
+class TaskSnoozeView(discord.ui.View):
+    """1-tap task reschedule control view."""
+
+    def __init__(self, task_id: int, timeout: float = 120.0):
+        super().__init__(timeout=timeout)
+        self.task_id = task_id
+
+    @discord.ui.button(label="+1 Day", style=discord.ButtonStyle.primary, emoji="⏰", custom_id="btn_snooze_1d")
+    async def snooze_1d(self, interaction: discord.Interaction, button: discord.ui.Button):
+        updated = await db.snooze_task(self.task_id, days_to_add=1)
+        if updated:
+            await interaction.response.edit_message(
+                content=f"⏰ **Snoozed Task #{self.task_id}:** New due date is **{updated.get('due_date')}**.",
+                embed=None,
+                view=None,
+            )
+        else:
+            await interaction.response.edit_message(content="Task not found.", embed=None, view=None)
+
+    @discord.ui.button(label="Push to Weekend", style=discord.ButtonStyle.secondary, emoji="📅", custom_id="btn_snooze_weekend")
+    async def snooze_weekend(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        # Days until Saturday (weekday 5)
+        days_to_sat = (5 - now_local.weekday()) % 7
+        if days_to_sat == 0:
+            days_to_sat = 7
+        updated = await db.snooze_task(self.task_id, days_to_add=days_to_sat)
+        if updated:
+            await interaction.response.edit_message(
+                content=f"📅 **Rescheduled Task #{self.task_id} to Saturday:** Due date is **{updated.get('due_date')}**.",
+                embed=None,
+                view=None,
+            )
+        else:
+            await interaction.response.edit_message(content="Task not found.", embed=None, view=None)
+
+    @discord.ui.button(label="Mark Done", style=discord.ButtonStyle.green, emoji="✅", custom_id="btn_snooze_done")
+    async def mark_done(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_str = datetime.datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        res = await db.complete_task_by_id(self.task_id, now_str)
+        if res:
+            await interaction.response.edit_message(
+                content=f"✅ **Marked Task #{self.task_id} as DONE:** {res['description']}.",
+                embed=None,
+                view=None,
+            )
+        else:
+            await interaction.response.edit_message(content="Task not found.", embed=None, view=None)
+
+
 class QuickActionView(discord.ui.View):
-    """Persistent 4-button quick action bar attached to briefings, summaries, and help guides."""
+    """Persistent 4-button quick action bar."""
 
     def __init__(self):
         super().__init__(timeout=None)
@@ -224,7 +528,188 @@ class QuickActionView(discord.ui.View):
         await interaction.followup.send(content=f"💡 **AI Financial & Focus Insight:**\n{advice}", ephemeral=True)
 
 
-# --- BOT LIFECYCLE & BACKGROUND SCHEDULED LOOPS ---
+class LiveDashboardView(discord.ui.View):
+    """Pinned live dashboard view with 1-click in-place refresh."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Refresh Dashboard", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="perlica:dash:refresh")
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        today_str = now_local.strftime("%Y-%m-%d")
+        month_str = now_local.strftime("%Y-%m")
+
+        _, today_spent, _ = await db.get_daily_summary(today_str)
+        pace_data = await db.get_spending_pace(today_str)
+        budget_status = await db.get_budget_status(month_str)
+        safe_allowance = await db.get_safe_daily_allowance(now_local)
+        due_bills = await db.get_due_recurring_bills(now_local.date())
+        upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
+        open_tasks = await db.get_open_tasks()
+        streak_info = await db.get_productivity_streak(today_str)
+
+        new_embed = format_live_dashboard(
+            today_spent=today_spent,
+            pace_data=pace_data,
+            budget_status=budget_status,
+            safe_allowance=safe_allowance,
+            due_bills=due_bills,
+            upcoming_bills=upcoming_bills,
+            open_tasks=open_tasks,
+            streak_info=streak_info,
+            date_str=today_str,
+        )
+        await interaction.response.edit_message(embed=new_embed, view=self)
+
+    @discord.ui.button(label="Budgets", style=discord.ButtonStyle.primary, emoji="📊", custom_id="perlica:dash:budgets")
+    async def budget_sub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        status = await db.get_budget_status(month_str)
+        await interaction.response.send_message(embed=format_budget_overview(status), ephemeral=True)
+
+    @discord.ui.button(label="Tasks", style=discord.ButtonStyle.primary, emoji="📋", custom_id="perlica:dash:tasks")
+    async def task_sub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        open_tasks = await db.get_open_tasks()
+        embed = format_task_selector_embed(open_tasks)
+        view = TaskMultiSelectView(open_tasks) if open_tasks else None
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="Advice", style=discord.ButtonStyle.success, emoji="💡", custom_id="perlica:dash:advice")
+    async def advice_sub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        now_local = datetime.datetime.now(settings.tz)
+        snapshot = await db.get_full_snapshot()
+        advice = await extractor.generate_ai_insight(
+            prompt_topic="Live dashboard insight request.",
+            snapshot_data=snapshot,
+            now_local=now_local,
+        )
+        await interaction.followup.send(content=f"💡 **Live Advice:**\n{advice}", ephemeral=True)
+
+
+class QuickLogPresetView(discord.ui.View):
+    """1-tap quick log preset buttons view."""
+
+    def __init__(self, on_trigger_preset: Callable[[ExtractedPayload, discord.Interaction], Any]):
+        super().__init__(timeout=180.0)
+        self.on_trigger_preset = on_trigger_preset
+
+    @discord.ui.button(label="Mamak RM 15", style=discord.ButtonStyle.secondary, emoji="🍽️", custom_id="btn_preset_mamak")
+    async def preset_mamak(self, interaction: discord.Interaction, button: discord.ui.Button):
+        payload = ExtractedPayload(
+            expenses=[ExpenseItem(amount=15.0, category=ExpenseCategory.FOOD, note="Mamak Lunch")]
+        )
+        await self.on_trigger_preset(payload, interaction)
+
+    @discord.ui.button(label="TNG Reload RM 50", style=discord.ButtonStyle.secondary, emoji="🚗", custom_id="btn_preset_tng")
+    async def preset_tng(self, interaction: discord.Interaction, button: discord.ui.Button):
+        payload = ExtractedPayload(
+            expenses=[ExpenseItem(amount=50.0, category=ExpenseCategory.TRANSPORT, note="TNG Reload")]
+        )
+        await self.on_trigger_preset(payload, interaction)
+
+    @discord.ui.button(label="Coffee RM 12", style=discord.ButtonStyle.secondary, emoji="☕", custom_id="btn_preset_coffee")
+    async def preset_coffee(self, interaction: discord.Interaction, button: discord.ui.Button):
+        payload = ExtractedPayload(
+            expenses=[ExpenseItem(amount=12.0, category=ExpenseCategory.FOOD, note="Coffee / Kopi")]
+        )
+        await self.on_trigger_preset(payload, interaction)
+
+    @discord.ui.button(label="99 Speedmart RM 30", style=discord.ButtonStyle.secondary, emoji="🛒", custom_id="btn_preset_speedmart")
+    async def preset_speedmart(self, interaction: discord.Interaction, button: discord.ui.Button):
+        payload = ExtractedPayload(
+            expenses=[ExpenseItem(amount=30.0, category=ExpenseCategory.GROCERIES, note="99 Speedmart groceries")]
+        )
+        await self.on_trigger_preset(payload, interaction)
+
+
+# --- DISCORD SLASH COMMANDS (APPLICATION TREE) ---
+
+@bot.tree.command(name="dashboard", description="Open your live interactive command center dashboard")
+async def slash_dashboard(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    today_str = now_local.strftime("%Y-%m-%d")
+    month_str = now_local.strftime("%Y-%m")
+
+    _, today_spent, _ = await db.get_daily_summary(today_str)
+    pace_data = await db.get_spending_pace(today_str)
+    budget_status = await db.get_budget_status(month_str)
+    safe_allowance = await db.get_safe_daily_allowance(now_local)
+    due_bills = await db.get_due_recurring_bills(now_local.date())
+    upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
+    open_tasks = await db.get_open_tasks()
+    streak_info = await db.get_productivity_streak(today_str)
+
+    embed = format_live_dashboard(
+        today_spent=today_spent,
+        pace_data=pace_data,
+        budget_status=budget_status,
+        safe_allowance=safe_allowance,
+        due_bills=due_bills,
+        upcoming_bills=upcoming_bills,
+        open_tasks=open_tasks,
+        streak_info=streak_info,
+        date_str=today_str,
+    )
+    await interaction.response.send_message(embed=embed, view=LiveDashboardView())
+
+
+@bot.tree.command(name="tasks", description="View active open tasks with 1-tap completion dropdown")
+async def slash_tasks(interaction: discord.Interaction):
+    open_tasks = await db.get_open_tasks()
+    embed = format_task_selector_embed(open_tasks)
+    view = TaskMultiSelectView(open_tasks) if open_tasks else None
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="budgets", description="View current monthly budget progress bars")
+async def slash_budgets(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    month_str = now_local.strftime("%Y-%m")
+    status = await db.get_budget_status(month_str)
+    await interaction.response.send_message(embed=format_budget_overview(status))
+
+
+@bot.tree.command(name="export", description="Download your monthly expense spreadsheet (.csv)")
+async def slash_export(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    month_str = now_local.strftime("%Y-%m")
+    start_month = now_local.strftime("%Y-%m-01")
+    csv_text = await db.generate_csv_data(start_month)
+    csv_file = discord.File(
+        io.BytesIO(csv_text.encode("utf-8")),
+        filename=f"Perlica_Expenses_{month_str}.csv",
+    )
+    await interaction.response.send_message(
+        content=f"📄 **Here is your expense export for {now_local.strftime('%B %Y')}:**",
+        file=csv_file,
+    )
+
+
+@bot.tree.command(name="presets", description="Display 1-tap quick log presets")
+async def slash_presets(interaction: discord.Interaction):
+    async def trigger_preset(payload: ExtractedPayload, inter: discord.Interaction):
+        await handle_action_preview_flow(inter, payload, from_interaction=True)
+
+    await interaction.response.send_message(embed=format_presets_embed(), view=QuickLogPresetView(on_trigger_preset=trigger_preset))
+
+
+# --- BOT LIFECYCLE HOOKS & SCHEDULED LOOPS ---
+
+async def bot_setup_hook():
+    """Execute startup tasks and perform singleton tree sync safely without reconnect rate-limits."""
+    if not getattr(bot, "_has_synced_tree", False):
+        try:
+            await bot.tree.sync()
+            bot._has_synced_tree = True
+            logger.info("Global slash commands synced successfully via setup_hook.")
+        except Exception as e:
+            logger.warning(f"Global slash command sync note: {e}")
+
+bot.setup_hook = bot_setup_hook
+
 
 @bot.event
 async def on_ready():
@@ -232,26 +717,21 @@ async def on_ready():
     await db.init_db()
     logger.info("Database schema initialized successfully.")
 
-    # Register persistent view for restart resilience
+    # Register persistent views for restart resilience
     bot.add_view(QuickActionView())
+    bot.add_view(LiveDashboardView())
 
     if not daily_summary_loop.is_running():
         daily_summary_loop.start()
-        logger.info(
-            f"Daily summary loop scheduled at {settings.DAILY_SUMMARY_TIME} ({settings.TIMEZONE})."
-        )
+        logger.info(f"Daily summary loop scheduled at {settings.DAILY_SUMMARY_TIME} ({settings.TIMEZONE}).")
 
     if not morning_briefing_loop.is_running():
         morning_briefing_loop.start()
-        logger.info(
-            f"Morning briefing loop scheduled at {settings.MORNING_BRIEFING_TIME} ({settings.TIMEZONE})."
-        )
+        logger.info(f"Morning briefing loop scheduled at {settings.MORNING_BRIEFING_TIME} ({settings.TIMEZONE}).")
 
     if not weekly_review_loop.is_running():
         weekly_review_loop.start()
-        logger.info(
-            f"Weekly executive review loop scheduled on Sundays at {settings.WEEKLY_REVIEW_TIME} ({settings.TIMEZONE})."
-        )
+        logger.info(f"Weekly executive review loop scheduled on Sundays at {settings.WEEKLY_REVIEW_TIME} ({settings.TIMEZONE}).")
 
 
 summary_h, summary_m = settings.summary_hour_minute
@@ -282,6 +762,7 @@ async def morning_briefing_loop():
     due_bills = await db.get_due_recurring_bills(now_local.date())
     upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
     budget_status = await db.get_budget_status(month_str)
+    safe_allowance = await db.get_safe_daily_allowance(now_local)
 
     embed = format_morning_briefing(
         open_tasks=open_tasks,
@@ -289,6 +770,7 @@ async def morning_briefing_loop():
         budget_status=budget_status,
         date_str=today_str,
         upcoming_bills=upcoming_bills,
+        safe_allowance=safe_allowance,
     )
     try:
         await target_user.send(embed=embed, view=QuickActionView())
@@ -310,6 +792,7 @@ async def daily_summary_loop():
     expenses, total_spent, open_tasks = await db.get_daily_summary(today_str)
     spending_pace = await db.get_spending_pace(today_str)
     streak_info = await db.get_productivity_streak(today_str)
+    cat_proportions = await db.get_category_proportions(today_str, today_str)
 
     embed = format_daily_summary(
         expenses=expenses,
@@ -318,6 +801,7 @@ async def daily_summary_loop():
         date_str=today_str,
         spending_pace=spending_pace,
         streak_info=streak_info,
+        category_proportions=cat_proportions,
     )
 
     try:
@@ -337,7 +821,6 @@ async def daily_summary_loop():
 async def weekly_review_loop():
     """Background scheduled job dispatching Sunday 8:00 PM Weekly Executive Review."""
     now_local = datetime.datetime.now(settings.tz)
-    # Check if today is Sunday (weekday == 6 in Python datetime)
     if now_local.weekday() != 6:
         return
 
@@ -354,7 +837,7 @@ async def weekly_review_loop():
 
     review_data = await db.get_weekly_review_data(start_of_week, end_of_week)
     ai_kickoff = await extractor.generate_ai_insight(
-        prompt_topic="Sunday Weekly Executive Review. Analyze the week's accomplishments and provide a high-impact strategic kickoff for Monday.",
+        prompt_topic="Sunday Weekly Executive Review kickoff.",
         snapshot_data=await db.get_full_snapshot(start_of_week, end_of_week),
         now_local=now_local,
     )
@@ -367,26 +850,156 @@ async def weekly_review_loop():
         logger.error(f"Failed to send weekly review DM: {e}")
 
 
+# --- ACTION INGESTION HANDLER HELPER ---
+
+async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, from_interaction: bool = False):
+    """Shared handler to render 3-button Action Ingestion preview and commit changes on confirm."""
+    now_local = datetime.datetime.now(settings.tz)
+    now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+    month_str = now_local.strftime("%Y-%m")
+
+    expenses_preview = [
+        {
+            "amount": exp.amount,
+            "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+            "note": exp.note,
+            "occurred_date": exp.occurred_date,
+        }
+        for exp in payload.expenses
+    ]
+    tasks_preview = [
+        {
+            "description": task.description,
+            "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+            "due_date": task.due_date,
+            "due_time": task.due_time,
+            "phases": task.phases,
+        }
+        for task in payload.new_tasks
+    ]
+
+    async def on_confirm(interaction: discord.Interaction):
+        inserted_expenses: List[Dict[str, Any]] = []
+        for exp in payload.expenses:
+            created_at = f"{exp.occurred_date} 12:00:00" if exp.occurred_date else now_str
+            eid = await db.insert_expense(
+                amount=exp.amount,
+                category=exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                note=exp.note,
+                created_at=created_at,
+            )
+            inserted_expenses.append(
+                {
+                    "id": eid,
+                    "amount": exp.amount,
+                    "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                    "note": exp.note,
+                    "created_at": created_at,
+                }
+            )
+
+        inserted_tasks: List[Dict[str, Any]] = []
+        for task in payload.new_tasks:
+            priority_val = task.priority.value if hasattr(task.priority, "value") else str(task.priority)
+            if task.phases:
+                parent_id, subtasks = await db.insert_task_with_phases(
+                    description=task.description,
+                    priority=priority_val,
+                    phases=task.phases,
+                    due_date=task.due_date,
+                    due_time=task.due_time,
+                    created_at=now_str,
+                )
+                inserted_tasks.append(
+                    {
+                        "id": parent_id,
+                        "description": task.description,
+                        "priority": priority_val,
+                        "due_date": task.due_date,
+                        "due_time": task.due_time,
+                        "created_at": now_str,
+                        "subphases": subtasks,
+                    }
+                )
+            else:
+                tid = await db.insert_task(
+                    description=task.description,
+                    priority=priority_val,
+                    due_date=task.due_date,
+                    due_time=task.due_time,
+                    created_at=now_str,
+                )
+                inserted_tasks.append(
+                    {
+                        "id": tid,
+                        "description": task.description,
+                        "priority": priority_val,
+                        "due_date": task.due_date,
+                        "due_time": task.due_time,
+                        "created_at": now_str,
+                    }
+                )
+
+        completed_tasks_details: List[Dict[str, Any]] = []
+        if payload.completed_task_ids:
+            completed_tasks_details = await db.complete_tasks_by_ids(payload.completed_task_ids, completed_at=now_str)
+
+        if payload.add_bill_name and payload.add_bill_amount is not None:
+            b_cat = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
+            await db.add_recurring_bill(payload.add_bill_name, payload.add_bill_amount, b_cat, payload.add_bill_day or 1)
+
+        if payload.set_budget_category and payload.set_budget_amount is not None:
+            await db.set_budget(payload.set_budget_category, payload.set_budget_amount)
+
+        budget_alerts = []
+        if inserted_expenses:
+            current_budget_status = await db.get_budget_status(month_str)
+            for b in current_budget_status:
+                if b["is_overspent"]:
+                    budget_alerts.append(f"🚨 **{b['category']}** exceeded monthly limit! (RM {b['spent']:.2f} / RM {b['limit']:.2f})")
+                elif b["is_warning"]:
+                    budget_alerts.append(f"⚠️ **{b['category']}** at {b['percentage']}% of monthly limit (RM {b['remaining']:.2f} left).")
+
+        streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
+
+        confirmed_embed = format_action_confirmation(
+            payload=payload,
+            inserted_expenses=inserted_expenses,
+            inserted_tasks=inserted_tasks,
+            completed_tasks=completed_tasks_details,
+            budget_alerts=budget_alerts,
+            streak_info=streak_info,
+        )
+        await interaction.response.edit_message(embed=confirmed_embed, view=QuickActionView())
+
+    preview_embed = format_action_preview(
+        payload=payload,
+        expenses=expenses_preview,
+        tasks=tasks_preview,
+        completed_task_ids=payload.completed_task_ids,
+    )
+    view = ActionIngestionView(on_confirm=on_confirm, payload=payload)
+
+    if from_interaction:
+        await target.response.send_message(embed=preview_embed, view=view)
+    else:
+        await target.reply(embed=preview_embed, view=view)
+
+
 # --- MESSAGE DISPATCHER & INGESTION ---
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignore bot messages
     if message.author.bot or message.author.id == bot.user.id:
         return
-
-    # Restrict to Direct Messages (DMs) only
     if message.guild is not None:
         return
-
-    # Security: Restrict exclusively to the designated user ID
     if settings.ALLOWED_USER_ID and message.author.id != settings.ALLOWED_USER_ID:
         return
 
     content = message.content.strip()
     image_attachment = None
 
-    # Check attachments for voice notes or receipt photos
     if message.attachments:
         for att in message.attachments:
             lower_name = att.filename.lower()
@@ -410,10 +1023,66 @@ async def on_message(message: discord.Message):
         await message.reply(embed=format_help_guide(), view=QuickActionView())
         return
 
+    # Direct Live Dashboard Command Check
+    if content.lower() in ("dashboard", "!dashboard", "status", "center"):
+        now_local = datetime.datetime.now(settings.tz)
+        today_str = now_local.strftime("%Y-%m-%d")
+        month_str = now_local.strftime("%Y-%m")
+
+        _, today_spent, _ = await db.get_daily_summary(today_str)
+        pace_data = await db.get_spending_pace(today_str)
+        budget_status = await db.get_budget_status(month_str)
+        safe_allowance = await db.get_safe_daily_allowance(now_local)
+        due_bills = await db.get_due_recurring_bills(now_local.date())
+        upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
+        open_tasks = await db.get_open_tasks()
+        streak_info = await db.get_productivity_streak(today_str)
+
+        embed = format_live_dashboard(
+            today_spent=today_spent,
+            pace_data=pace_data,
+            budget_status=budget_status,
+            safe_allowance=safe_allowance,
+            due_bills=due_bills,
+            upcoming_bills=upcoming_bills,
+            open_tasks=open_tasks,
+            streak_info=streak_info,
+            date_str=today_str,
+        )
+        await message.reply(embed=embed, view=LiveDashboardView())
+        return
+
+    # Direct Presets Command Check
+    if content.lower() in ("presets", "!presets", "quick"):
+        async def trigger_preset(payload: ExtractedPayload, inter: discord.Interaction):
+            await handle_action_preview_flow(inter, payload, from_interaction=True)
+
+        await message.reply(embed=format_presets_embed(), view=QuickLogPresetView(on_trigger_preset=trigger_preset))
+        return
+
+    # Direct Snooze Command Check (e.g. "snooze 1" or "!snooze 1")
+    snooze_match = re.match(r"^!?snooze\s+(\d+)$", content.lower())
+    if snooze_match:
+        task_id = int(snooze_match.group(1))
+        task = await db.get_task_by_id(task_id)
+        if task:
+            await message.reply(embed=format_task_snooze_embed(task), view=TaskSnoozeView(task_id))
+        else:
+            await message.reply(f"Task #{task_id} not found.")
+        return
+
+    # Manual Slash Command Force Sync
+    if content.lower() == "!sync":
+        try:
+            synced = await bot.tree.sync()
+            await message.reply(f"⚡ Global application slash commands synced ({len(synced)} commands registered).")
+        except Exception as e:
+            await message.reply(f"⚠️ Sync failed: {e}")
+        return
+
     # Visual feedback: typing indicator in DM
     async with message.channel.typing():
         now_local = datetime.datetime.now(settings.tz)
-        now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
         month_str = now_local.strftime("%Y-%m")
         open_tasks = await db.get_open_tasks()
         recurring_bills = await db.list_recurring_bills()
@@ -429,7 +1098,6 @@ async def on_message(message: discord.Message):
                 recurring_bills=recurring_bills,
             )
         else:
-            # Extract structured payload via LLM layer with live tasks and bills
             payload: ExtractedPayload = await extractor.extract_information(
                 text=content,
                 now_local=now_local,
@@ -437,7 +1105,7 @@ async def on_message(message: discord.Message):
                 recurring_bills=recurring_bills,
             )
 
-        # 0. Zero-Assumption Clarification Prompt
+        # 0. Clarification Prompt
         if payload.needs_clarification and payload.clarification_prompt:
             await message.reply(payload.clarification_prompt)
             return
@@ -735,7 +1403,6 @@ async def on_message(message: discord.Message):
                 await message.reply(embed=embed, view=QuickActionView())
                 return
 
-            # Interactive Task Multi-Select Dropdown for open tasks
             if q.query_target == "TASKS":
                 tasks_list = await db.get_open_tasks()
                 embed = format_task_selector_embed(tasks_list)
@@ -764,7 +1431,6 @@ async def on_message(message: discord.Message):
                 start_d, end_d = None, None
                 title_time = "All Time"
 
-            # Full Executive Summary Request
             if q.query_target == "SUMMARY":
                 snapshot = await db.get_full_snapshot(start_d, end_d)
                 budget_status = await db.get_budget_status(month_str)
@@ -777,7 +1443,6 @@ async def on_message(message: discord.Message):
                 await message.reply(embed=embed, view=QuickActionView())
                 return
 
-            # Specific Advice or General Question
             if q.query_target in ("ADVICE", "GENERAL") or q.specific_question:
                 snapshot = await db.get_full_snapshot(start_d, end_d)
                 ai_answer = await extractor.generate_ai_insight(
@@ -788,7 +1453,6 @@ async def on_message(message: discord.Message):
                 await message.reply(ai_answer, view=QuickActionView())
                 return
 
-            # Targeted Expenses Status
             expenses, total, breakdown = await db.get_expenses_summary(start_d, end_d)
             tasks_list = await db.get_open_tasks()
 
@@ -802,164 +1466,8 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=QuickActionView())
             return
 
-        # 8. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
-        expenses_preview = [
-            {
-                "amount": exp.amount,
-                "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
-                "note": exp.note,
-                "occurred_date": exp.occurred_date,
-            }
-            for exp in payload.expenses
-        ]
-        tasks_preview = [
-            {
-                "description": task.description,
-                "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
-                "due_date": task.due_date,
-                "due_time": task.due_time,
-                "phases": task.phases,
-            }
-            for task in payload.new_tasks
-        ]
-
-        # Callback for [Confirm]
-        async def on_confirm_ingest(interaction: discord.Interaction):
-            inserted_expenses: List[Dict[str, Any]] = []
-            for exp in payload.expenses:
-                created_at = (
-                    f"{exp.occurred_date} 12:00:00" if exp.occurred_date else now_str
-                )
-                eid = await db.insert_expense(
-                    amount=exp.amount,
-                    category=exp.category.value if hasattr(exp.category, "value") else str(exp.category),
-                    note=exp.note,
-                    created_at=created_at,
-                )
-                inserted_expenses.append(
-                    {
-                        "id": eid,
-                        "amount": exp.amount,
-                        "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
-                        "note": exp.note,
-                        "created_at": created_at,
-                    }
-                )
-
-            inserted_tasks: List[Dict[str, Any]] = []
-            for task in payload.new_tasks:
-                priority_val = task.priority.value if hasattr(task.priority, "value") else str(task.priority)
-
-                if task.phases:
-                    parent_id, subtasks = await db.insert_task_with_phases(
-                        description=task.description,
-                        priority=priority_val,
-                        phases=task.phases,
-                        due_date=task.due_date,
-                        due_time=task.due_time,
-                        created_at=now_str,
-                    )
-                    inserted_tasks.append(
-                        {
-                            "id": parent_id,
-                            "description": task.description,
-                            "priority": priority_val,
-                            "due_date": task.due_date,
-                            "due_time": task.due_time,
-                            "created_at": now_str,
-                            "subphases": subtasks,
-                        }
-                    )
-                else:
-                    tid = await db.insert_task(
-                        description=task.description,
-                        priority=priority_val,
-                        due_date=task.due_date,
-                        due_time=task.due_time,
-                        created_at=now_str,
-                    )
-                    inserted_tasks.append(
-                        {
-                            "id": tid,
-                            "description": task.description,
-                            "priority": priority_val,
-                            "due_date": task.due_date,
-                            "due_time": task.due_time,
-                            "created_at": now_str,
-                        }
-                    )
-
-            completed_tasks_details: List[Dict[str, Any]] = []
-            if payload.completed_task_ids:
-                completed_tasks_details = await db.complete_tasks_by_ids(
-                    payload.completed_task_ids, completed_at=now_str
-                )
-
-            # Recurring Bill Saved on Confirm
-            if payload.add_bill_name and payload.add_bill_amount is not None:
-                b_name = payload.add_bill_name
-                b_amt = payload.add_bill_amount
-                b_cat = payload.add_bill_category.value if payload.add_bill_category else "Utilities & Bills"
-                b_day = payload.add_bill_day or 1
-                await db.add_recurring_bill(b_name, b_amt, b_cat, b_day)
-
-            # Budget Limit Saved on Confirm
-            if payload.set_budget_category and payload.set_budget_amount is not None:
-                await db.set_budget(payload.set_budget_category, payload.set_budget_amount)
-
-            # Check Budget Utilization & Alerts
-            budget_alerts = []
-            if inserted_expenses:
-                current_budget_status = await db.get_budget_status(month_str)
-                for b in current_budget_status:
-                    if b["is_overspent"]:
-                        budget_alerts.append(f"🚨 **{b['category']}** has exceeded monthly limit! (RM {b['spent']:.2f} / RM {b['limit']:.2f})")
-                    elif b["is_warning"]:
-                        budget_alerts.append(f"⚠️ **{b['category']}** is at {b['percentage']}% of monthly limit (RM {b['remaining']:.2f} left).")
-
-            streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
-
-            confirmed_embed = format_action_confirmation(
-                payload=payload,
-                inserted_expenses=inserted_expenses,
-                inserted_tasks=inserted_tasks,
-                completed_tasks=completed_tasks_details,
-                budget_alerts=budget_alerts,
-                streak_info=streak_info,
-            )
-            await interaction.response.edit_message(
-                embed=confirmed_embed, view=QuickActionView()
-            )
-
-        # Callback for [Edit]
-        async def on_edit_ingest(interaction: discord.Interaction):
-            await interaction.response.edit_message(
-                content="✏️ Please send your corrected message directly (e.g. *'Spent RM 20 on lunch'* or *'Task due tomorrow 3pm'*).",
-                embed=None,
-                view=None,
-            )
-
-        # Callback for [Reject]
-        async def on_reject_ingest(interaction: discord.Interaction):
-            await interaction.response.edit_message(
-                content="❌ Entry discarded. Nothing was saved.",
-                embed=None,
-                view=None,
-            )
-
-        # Send Preview Embed with 3 Buttons
-        preview_embed = format_action_preview(
-            payload=payload,
-            expenses=expenses_preview,
-            tasks=tasks_preview,
-            completed_task_ids=payload.completed_task_ids,
-        )
-        view = ActionIngestionView(
-            on_confirm=on_confirm_ingest,
-            on_edit=on_edit_ingest,
-            on_reject=on_reject_ingest,
-        )
-        await message.reply(embed=preview_embed, view=view)
+        # 8. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit Modal] [Reject])
+        await handle_action_preview_flow(message, payload, from_interaction=False)
 
 
 def main():

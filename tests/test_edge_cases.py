@@ -204,3 +204,94 @@ async def test_dropdown_menu_25_option_cap_safeguard():
     assert len(menu.options) == 25
     assert menu.max_values == 25
 
+
+def test_category_synonym_fuzzy_resolver():
+    """Verify resolve_category_from_text handles modal inputs and Malaysian slang."""
+    from src.extractor import resolve_category_from_text, ExpenseCategory
+
+    assert resolve_category_from_text("makan") == ExpenseCategory.FOOD
+    assert resolve_category_from_text("Dinner with team") == ExpenseCategory.FOOD
+    assert resolve_category_from_text("TNG topup") == ExpenseCategory.TRANSPORT
+    assert resolve_category_from_text("petrol") == ExpenseCategory.TRANSPORT
+    assert resolve_category_from_text("99 speedmart") == ExpenseCategory.GROCERIES
+    assert resolve_category_from_text("unifi wifi") == ExpenseCategory.UTILITIES
+    assert resolve_category_from_text("steam battlepass") == ExpenseCategory.ENTERTAINMENT
+    assert resolve_category_from_text("shopee haul") == ExpenseCategory.SHOPPING
+    assert resolve_category_from_text("clinic doctor visit") == ExpenseCategory.HEALTH
+    assert resolve_category_from_text("s&p 500 etf") == ExpenseCategory.INVESTMENT
+    assert resolve_category_from_text("random unidentified item") == ExpenseCategory.OTHER
+
+
+@pytest.mark.asyncio
+async def test_safe_daily_allowance_zero_division_and_overspend_guards(db: DatabaseManager):
+    """
+    Test safe-to-spend allowance:
+    1. Middle of month (15 days left)
+    2. Last day of month (August 31 -> days_remaining must be 1, NEVER 0)
+    3. Overspend condition (budget exceeded -> safe allowance must be 0.0 with overspent alert)
+    """
+    await db.set_budget("Food & Dining", 600.0)
+
+    # 1. Mid-month (Aug 15 -> 17 days left including today: 31 - 15 + 1 = 17)
+    await db.insert_expense(260.0, "Food & Dining", "Meals", "2026-08-15 12:00:00")
+    mid_month_dt = datetime(2026, 8, 15, 8, 30, 0)
+    allowance_mid = await db.get_safe_daily_allowance(mid_month_dt)
+    assert allowance_mid["has_budget"] is True
+    assert allowance_mid["days_remaining"] == 17
+    assert allowance_mid["remaining_budget"] == 340.0
+    assert allowance_mid["safe_daily_allowance"] == round(340.0 / 17, 2)
+    assert allowance_mid["is_overspent"] is False
+
+    # 2. Last day of month (Aug 31 -> days_remaining must be 1, NO ZeroDivisionError!)
+    last_day_dt = datetime(2026, 8, 31, 8, 30, 0)
+    allowance_last = await db.get_safe_daily_allowance(last_day_dt)
+    assert allowance_last["days_remaining"] == 1
+    assert allowance_last["safe_daily_allowance"] == 340.0
+
+    # 3. Overspend condition (Spend additional 400 -> total 660 on 600 budget)
+    await db.insert_expense(400.0, "Food & Dining", "Fancy Dinner", "2026-08-31 20:00:00")
+    allowance_over = await db.get_safe_daily_allowance(last_day_dt)
+    assert allowance_over["is_overspent"] is True
+    assert allowance_over["overspent_by"] == 60.0
+    assert allowance_over["safe_daily_allowance"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_task_snooze_and_reschedule(db: DatabaseManager):
+    """Test snoozing task forward by 1 day and custom days across month boundaries."""
+    tid = await db.insert_task("Submit Tax Return", priority="HIGH", due_date="2026-08-31", created_at="2026-08-25 10:00:00")
+    
+    # Snooze +1 day -> moves from 2026-08-31 to 2026-09-01 (handles month rollover)
+    snoozed_1 = await db.snooze_task(tid, days_to_add=1)
+    assert snoozed_1 is not None
+    assert snoozed_1["due_date"] == "2026-09-01"
+
+    # Snooze +5 days -> moves to 2026-09-06
+    snoozed_5 = await db.snooze_task(tid, days_to_add=5)
+    assert snoozed_5["due_date"] == "2026-09-06"
+
+
+@pytest.mark.asyncio
+async def test_category_proportion_ascii_heatmap(db: DatabaseManager):
+    """Test category spending proportions and ASCII proportion heatmap rendering."""
+    from src.formatters import render_category_heatmap
+
+    await db.insert_expense(50.0, "Food & Dining", "Lunch", "2026-08-25 12:00:00")
+    await db.insert_expense(30.0, "Transport", "Grab", "2026-08-25 14:00:00")
+    await db.insert_expense(20.0, "Entertainment", "Steam Game", "2026-08-25 16:00:00")
+
+    proportions = await db.get_category_proportions("2026-08-25", "2026-08-25")
+    assert len(proportions) == 3
+    assert proportions[0]["category"] == "Food & Dining"
+    assert proportions[0]["percentage"] == 50.0
+    assert proportions[1]["category"] == "Transport"
+    assert proportions[1]["percentage"] == 30.0
+    assert proportions[2]["category"] == "Entertainment"
+    assert proportions[2]["percentage"] == 20.0
+
+    heatmap = render_category_heatmap(proportions)
+    assert "Food & Dining" in heatmap
+    assert "50.0%" in heatmap
+    assert "`[" in heatmap and "]`" in heatmap
+
+
