@@ -68,7 +68,25 @@ def format_action_preview(
             inline=False,
         )
 
-    # 3. Completed Tasks Preview
+    # 3. Recurring Bills Preview
+    if payload.add_bill_name and payload.add_bill_amount is not None:
+        cat_name = payload.add_bill_category.value if payload.add_bill_category else "Utilities & Bills"
+        day_str = f"on the {payload.add_bill_day}th" if payload.add_bill_day else "monthly"
+        embed.add_field(
+            name="🔔 Recurring Bill to Add (Human Reminder Only)",
+            value=f"• **{payload.add_bill_name}** — RM {payload.add_bill_amount:.2f} (`{cat_name}`) {day_str}",
+            inline=False,
+        )
+
+    # 4. Budget Limit Preview
+    if payload.set_budget_category and payload.set_budget_amount is not None:
+        embed.add_field(
+            name="🎯 Monthly Budget to Set",
+            value=f"• **{payload.set_budget_category}:** RM {payload.set_budget_amount:.2f} monthly limit",
+            inline=False,
+        )
+
+    # 5. Completed Tasks Preview
     if completed_task_ids:
         lines = [f"• Task ID `#{tid}` marked `DONE`" for tid in completed_task_ids]
         embed.add_field(
@@ -77,7 +95,7 @@ def format_action_preview(
             inline=False,
         )
 
-    # 4. Ambiguity note if any
+    # 6. Ambiguity note if any
     if payload.ambiguous_task_note:
         embed.add_field(
             name="⚠️ Clarification Required",

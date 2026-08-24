@@ -30,6 +30,7 @@ class ExpenseCategory(str, Enum):
     ENTERTAINMENT = "Entertainment"
     SHOPPING = "Shopping"
     HEALTH = "Health & Personal"
+    INVESTMENT = "Investments & Savings"
     OTHER = "Other"
 
 
@@ -110,7 +111,7 @@ class ExtractedPayload(BaseModel):
         description="Exact integer IDs of open tasks or sub-phases from the provided context that the user completed. Leave empty list if none.",
     )
     # Undo / Delete / Edit Actions
-    undo_intent: Optional[Literal["EXPENSE", "TASK", "LAST", "NONE"]] = Field(
+    undo_intent: Optional[Literal["EXPENSE", "TASK", "BILL", "LAST", "NONE"]] = Field(
         default=None,
         description="Populate if user asks to undo the last action (e.g. 'undo', 'cancel last entry', 'undo last expense').",
     )
@@ -169,16 +170,16 @@ class ExtractedPayload(BaseModel):
     )
     set_budget_amount: Optional[float] = Field(
         default=None,
-        description="Monthly budget limit amount in MYR.",
+        description="Monthly budget limit amount as a number (e.g. 800.0). Extract numeric value even if written with $, RM, or words.",
     )
-    # Recurring Bill Configuration (Human in the loop reminders only)
+    # Recurring Bill Configuration & Editing (Human in the loop reminders only)
     add_bill_name: Optional[str] = Field(
         default=None,
-        description="Name of recurring bill (e.g. 'Unifi', 'Netflix', 'Rent').",
+        description="Name of recurring bill or investment (e.g. 'Unifi', 'Netflix', 'Rent', 'S&P500').",
     )
     add_bill_amount: Optional[float] = Field(
         default=None,
-        description="Amount of recurring bill in MYR.",
+        description="Numeric amount of recurring bill or investment (e.g. 100.0). Strip $, RM, USD.",
     )
     add_bill_category: Optional[ExpenseCategory] = Field(
         default=None,
@@ -188,6 +189,30 @@ class ExtractedPayload(BaseModel):
         default=None,
         description="Day of the month the bill is due (1-31).",
     )
+    edit_bill_id: Optional[int] = Field(
+        default=None,
+        description="Exact integer ID of active recurring bill being edited from ACTIVE RECURRING BILLS IN DATABASE.",
+    )
+    edit_bill_name: Optional[str] = Field(
+        default=None,
+        description="New name for recurring bill.",
+    )
+    edit_bill_amount: Optional[float] = Field(
+        default=None,
+        description="New amount for recurring bill as a number (e.g. 400.0).",
+    )
+    edit_bill_category: Optional[ExpenseCategory] = Field(
+        default=None,
+        description="New category for recurring bill.",
+    )
+    edit_bill_day: Optional[int] = Field(
+        default=None,
+        description="New day of the month for recurring bill.",
+    )
+    delete_bill_id: Optional[int] = Field(
+        default=None,
+        description="Exact integer ID of recurring bill to delete from ACTIVE RECURRING BILLS IN DATABASE.",
+    )
     # CSV Data Export
     export_csv: bool = Field(
         default=False,
@@ -196,11 +221,11 @@ class ExtractedPayload(BaseModel):
     # Clarification
     needs_clarification: bool = Field(
         default=False,
-        description="Set to true if user input was underspecified or ambiguous (e.g. logged amount without item/category) to avoid making assumptions.",
+        description="Set to true ONLY if the message is an expense with ZERO item or vendor (e.g. 'Spent RM 50'). For recurring bills, tasks, or when item is known, keep false.",
     )
     clarification_prompt: Optional[str] = Field(
         default=None,
-        description="A polite question asking the user for missing details (e.g. 'What was the RM 50 spent on?').",
+        description="A polite question asking the user for missing details.",
     )
     ambiguous_task_note: Optional[str] = Field(
         default=None,
@@ -216,8 +241,12 @@ class ExtractedPayload(BaseModel):
     )
 
 
-def build_system_prompt(now_local: datetime, open_tasks: List[Dict[str, Any]]) -> str:
-    """Build a comprehensive system prompt with local temporal anchors and open tasks."""
+def build_system_prompt(
+    now_local: datetime,
+    open_tasks: List[Dict[str, Any]],
+    recurring_bills: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Build a comprehensive system prompt with local temporal anchors, open tasks, and active recurring bills."""
     today_str = now_local.strftime("%Y-%m-%d (%A)")
     tomorrow_str = (now_local + timedelta(days=1)).strftime("%Y-%m-%d (%A)")
     yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d (%A)")
@@ -231,6 +260,14 @@ def build_system_prompt(now_local: datetime, open_tasks: List[Dict[str, Any]]) -
     else:
         tasks_formatted = "No active open tasks."
 
+    if recurring_bills:
+        b_lines = []
+        for b in recurring_bills:
+            b_lines.append(f"- [Bill ID: {b['id']}] {b['name']}: RM {b['amount']:.2f} (Category: {b['category']}) on the {b['day_of_month']}th")
+        bills_formatted = "\n".join(b_lines)
+    else:
+        bills_formatted = "No active recurring bills."
+
     return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, budgets, recurring bills, and giving smart advice.
 
 LOCAL TIME REFERENCE:
@@ -242,6 +279,9 @@ LOCAL TIME REFERENCE:
 ACTIVE OPEN TASKS IN DATABASE:
 {tasks_formatted}
 
+ACTIVE RECURRING BILLS IN DATABASE:
+{bills_formatted}
+
 EXTRACTION & ZERO-ASSUMPTION RULES:
 1. MALAYSIAN LOCAL CONTEXT & VENDOR MAPPING:
    - **Transport**: TNG, Touch 'n Go, Touch n Go reload/topup, RFID, Tolls (PLUS, LDP, MEX, SMART), Parking, Petrol/Fuel (RON95, RON97, Diesel, Shell, Petronas, Caltex, BHP, Petron), Grab ride, AirAsia Ride, LRT, MRT, Monorail, KTM, RapidKL.
@@ -249,41 +289,52 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - **Groceries**: 99 Speedmart, Speedmart, Lotus's, Jaya Grocer, Village Grocer, Aeon, Econsave, Mydin, NSK, Pasar Malam, Wet Market.
    - **Utilities & Bills**: TNB (electricity), Air Selangor / Syabas (water), Indah Water (IWK), Astro, Unifi, TIME, Maxis, CelcomDigi, U Mobile, prepaid/postpaid phone reload.
    - **Entertainment**: In-game top-ups, monthly cards & passes (e.g. Endfield / Arknights Endfield, Arknights, Genshin Welkin, HSR Express Pass, ZZZ, Wuthering Waves, Blue Archive, Nikke, FGO, MLBB diamonds, Valorant Points, Roblox Robux, Battle Pass, Season Pass), Gaming stores & platforms (Codashop, UniPin, Razer Gold, Steam, PlayStation PSN, Nintendo eShop, Epic Games), Subscriptions (Discord Nitro, Spotify, Netflix, YouTube Premium, Disney+, cinema tickets, board games).
+   - **Investments & Savings**: S&P 500 / S&P500 / SNP 500, ETFs, Stocks, Mutual Funds, Crypto, Bitcoin, ETH, ASB, EPF / KWSP, Tabung Haji, Gold, StashAway, Versa, Wahed, Luno, monthly DCA / recurring investment buys.
    - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores, Gadgets, Clothes, Physical goods.
    - **Health & Personal**: Medical/Doctor/Clinic/Klinik/Hospital, Pharmacy (Watsons, Guardian, Caring, Big Pharmacy), Vitamins/Supplements, Skincare, Haircut, Grooming, Gym membership. (Note: In-game passes or monthly cards are NEVER Health & Personal).
 
-2. ZERO-ASSUMPTION POLICY (NEEDS CLARIFICATION):
-   - If the user provides an expense amount without ANY item, vendor, or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport / TNG, Shopping, Utilities)?", and leave expenses=[].
-   - If the user provides clear local context (e.g. "Reload TNG RM 50", "99 Speedmart RM 32", "RON95 RM 40", "Mamak lunch RM 12"), log it immediately under the correct category without asking.
+2. CURRENCY & AMOUNTS:
+   - Extract numeric amounts directly into amount fields (e.g. "$100", "RM 100", "100 USD", "100" -> 100.0).
+   - DO NOT convert currencies. If user says '$100' or 'RM 100', record 100.0.
+   - NEVER trigger needs_clarification if a number or currency figure is present with an item/vendor.
 
-3. BUDGET & RECURRING BILL COMMANDS:
-   - If user says "Set monthly food budget to 800": set set_budget_category="Food & Dining", set_budget_amount=800.0.
-   - If user says "Set monthly entertainment budget to 200": set set_budget_category="Entertainment", set_budget_amount=200.0.
-   - If user says "Add recurring bill: Netflix RM 55 on the 15th": set add_bill_name="Netflix", add_bill_amount=55.0, add_bill_category=ExpenseCategory.ENTERTAINMENT, add_bill_day=15.
-   - If user says "Add recurring bill: Unifi RM 139 on the 1st": set add_bill_name="Unifi", add_bill_amount=139.0, add_bill_category=ExpenseCategory.UTILITIES, add_bill_day=1.
+3. ZERO-ASSUMPTION POLICY:
+   - Only set needs_clarification=True if the message contains ONLY a raw number with NO context or vendor (e.g. "Spent 50", "Paid 30").
+   - If an item or vendor is present (e.g. "recurring buy $100 worth of s&p500 on the 27th"), set needs_clarification=False and extract all fields.
 
-4. CSV EXPORT:
-   - If user says "export expenses", "download csv", "export to excel", "export this month": set export_csv=True.
+4. RECURRING BILLS & INVESTMENTS EXAMPLES:
+   - "recurring buy $100 worth of s&p500 on the 27th on every month":
+     add_bill_name="S&P500", add_bill_amount=100.0, add_bill_category=ExpenseCategory.INVESTMENT, add_bill_day=27, needs_clarification=False
+   - "edit the recurring buy to 400":
+     edit_bill_id=<matched_id>, edit_bill_amount=400.0, needs_clarification=False
+   - "delete recurring bill #1":
+     delete_bill_id=1, needs_clarification=False
 
-5. UNDO, DELETE, EDIT & REOPEN:
-   - If user says "undo", "cancel that", "undo last": set undo_intent="LAST" (or "EXPENSE"/"TASK").
-   - If user says "delete expense #3": set delete_expense_id=3.
-   - If user says "delete task #5": set delete_task_id=5.
-   - If user says "change expense #2 amount to 25": set edit_expense_id=2, edit_expense_amount=25.0.
-   - If user says "update task #4 due date to tomorrow": set edit_task_id=4, edit_task_due_date calculated from tomorrow.
-   - If user says "reopen task #1" or "mark task #1 open": set reopen_task_id=1.
+4. BUDGET COMMANDS:
+   - "Set monthly food budget to 800": set set_budget_category="Food & Dining", set_budget_amount=800.0.
 
-6. MULTI-PHASE TASKS:
-   - If the user specifies sub-steps or phases (e.g. "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing"), populate TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
+5. CSV EXPORT:
+   - "export expenses", "download csv", "export to excel", "export this month": set export_csv=True.
 
-7. ON-DEMAND SUMMARIES & RECAPS:
-   - If the user asks for a summary (e.g. 'summarize today', 'recap my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
+6. UNDO, DELETE, EDIT & REOPEN:
+   - "undo", "cancel that", "undo last": set undo_intent="LAST" (or "EXPENSE"/"TASK"/"BILL").
+   - "delete expense #3": set delete_expense_id=3.
+   - "delete task #5": set delete_task_id=5.
+   - "change expense #2 amount to 25": set edit_expense_id=2, edit_expense_amount=25.0.
+   - "update task #4 due date to tomorrow": set edit_task_id=4, edit_task_due_date calculated from tomorrow.
+   - "reopen task #1" or "mark task #1 open": set reopen_task_id=1.
 
-8. TASK COMPLETIONS:
-   - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID. If ambiguous, explain in ambiguous_task_note with conflicting task IDs.
+7. MULTI-PHASE TASKS:
+   - "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing": TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
 
-9. CASUAL CONVERSATION:
-   - For greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?'), provide a warm, concise conversational_reply.
+8. ON-DEMAND SUMMARIES & RECAPS:
+   - "summarize today", "recap my day", "summary of this week": query with query_target='SUMMARY' and timeframe.
+
+9. TASK COMPLETIONS:
+   - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID.
+
+10. CASUAL CONVERSATION:
+   - For greetings, check-ins, or questions without data logging, provide a warm conversational_reply.
 """
 
 
@@ -316,7 +367,6 @@ class ExtractionEngine:
         groq_client = self._get_groq_client()
         raw_filename, file_bytes = audio_file_tuple
 
-        # Determine normalized filename and MIME type
         lower_name = raw_filename.lower()
         if lower_name.endswith(".ogg") or "voice-message" in lower_name:
             filename = "audio.ogg"
@@ -348,6 +398,7 @@ class ExtractionEngine:
         text: str,
         now_local: datetime,
         open_tasks: List[Dict[str, Any]],
+        recurring_bills: Optional[List[Dict[str, Any]]] = None,
     ) -> ExtractedPayload:
         """Extract structured task, expense, query, or conversational information with automatic model fallback."""
         if not text or not text.strip():
@@ -356,9 +407,8 @@ class ExtractionEngine:
             )
 
         client = self._get_client()
-        system_prompt = build_system_prompt(now_local, open_tasks)
+        system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills)
 
-        # Build candidate list starting with preferred model
         models_to_try = [self.model] + [m for m in GROQ_MODEL_CANDIDATES if m != self.model]
 
         last_error = None

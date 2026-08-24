@@ -232,12 +232,14 @@ async def on_message(message: discord.Message):
         now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
         month_str = now_local.strftime("%Y-%m")
         open_tasks = await db.get_open_tasks()
+        recurring_bills = await db.list_recurring_bills()
 
-        # Extract structured payload via LLM layer
+        # Extract structured payload via LLM layer with live tasks and bills
         payload: ExtractedPayload = await extractor.extract_information(
             text=content,
             now_local=now_local,
             open_tasks=open_tasks,
+            recurring_bills=recurring_bills,
         )
 
         # 0. Zero-Assumption Clarification Prompt
@@ -259,33 +261,7 @@ async def on_message(message: discord.Message):
             )
             return
 
-        # 2. Budget Configuration
-        if payload.set_budget_category and payload.set_budget_amount is not None:
-            cat = payload.set_budget_category
-            amt = payload.set_budget_amount
-            res = await db.set_budget(cat, amt)
-            status = await db.get_budget_status(month_str)
-            await message.reply(
-                content=f"🎯 **Monthly budget set for `{res['category']}`:** RM {res['monthly_limit']:.2f}",
-                embed=format_budget_overview(status),
-            )
-            return
-
-        # 3. Recurring Bill Addition (Human in the loop reminders only)
-        if payload.add_bill_name and payload.add_bill_amount is not None and payload.add_bill_day:
-            b_name = payload.add_bill_name
-            b_amt = payload.add_bill_amount
-            b_cat = payload.add_bill_category.value if payload.add_bill_category else "Utilities & Bills"
-            b_day = payload.add_bill_day
-
-            await db.add_recurring_bill(b_name, b_amt, b_cat, b_day)
-            await message.reply(
-                f"🔔 **Recurring Bill Saved:** `{b_name}` (RM {b_amt:.2f} — {b_cat}) on the **{b_day}th of every month**.\n"
-                f"*(Perlica will remind you in your Morning Briefing on the {b_day}th, with zero auto-deductions!)*"
-            )
-            return
-
-        # 4. UNDO Action with Button Confirmation
+        # 2. UNDO Action with Button Confirmation
         if payload.undo_intent:
             intent = payload.undo_intent
             last_exp = await db.get_last_expense()
@@ -331,7 +307,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_undo))
             return
 
-        # 5. DELETE Specific Expense / Task with Button Confirmation
+        # 3. DELETE Specific Expense / Task / Bill with Button Confirmation
         if payload.delete_expense_id:
             eid = payload.delete_expense_id
             target_exp = await db.get_expense_by_id(eid)
@@ -378,7 +354,30 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_task))
             return
 
-        # 6. EDIT Expense / Task with Button Confirmation
+        if payload.delete_bill_id:
+            bid = payload.delete_bill_id
+            target_bill = await db.get_recurring_bill_by_id(bid)
+            if not target_bill:
+                await message.reply(f"Recurring Bill #{bid} was not found.")
+                return
+
+            async def do_delete_bill(interaction: discord.Interaction):
+                await db.delete_recurring_bill(bid)
+                await interaction.response.edit_message(
+                    content=f"🗑️ **Deleted Recurring Bill #{bid}:** `{target_bill['name']}` (RM {target_bill['amount']:.2f}).",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Deletion",
+                description=f"Are you sure you want to delete **Recurring Bill #{bid}** (`{target_bill['name']}` — RM {target_bill['amount']:.2f})?",
+                color=discord.Color.red(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_bill))
+            return
+
+        # 4. EDIT Expense / Task / Bill with Button Confirmation
         if payload.edit_expense_id:
             eid = payload.edit_expense_id
             target_exp = await db.get_expense_by_id(eid)
@@ -444,7 +443,41 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_edit_task))
             return
 
-        # 7. REOPEN Task with Button Confirmation
+        if payload.edit_bill_id:
+            bid = payload.edit_bill_id
+            target_bill = await db.get_recurring_bill_by_id(bid)
+            if not target_bill:
+                await message.reply(f"Recurring Bill #{bid} was not found.")
+                return
+
+            new_amt = payload.edit_bill_amount if payload.edit_bill_amount is not None else target_bill["amount"]
+            new_name = payload.edit_bill_name or target_bill["name"]
+            new_cat = payload.edit_bill_category.value if payload.edit_bill_category else target_bill["category"]
+            new_day = payload.edit_bill_day if payload.edit_bill_day is not None else target_bill["day_of_month"]
+
+            async def do_edit_bill(interaction: discord.Interaction):
+                updated = await db.update_recurring_bill(bid, name=new_name, amount=new_amt, category=new_cat, day_of_month=new_day)
+                await interaction.response.edit_message(
+                    content=f"✏️ **Updated Recurring Bill #{bid}:** `{updated['name']}` (RM {updated['amount']:.2f} — `{updated['category']}`) due on the **{updated['day_of_month']}th**.",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Recurring Bill Update",
+                description=(
+                    f"**Recurring Bill #{bid} Changes:**\n"
+                    f"• Name: `{target_bill['name']}` ➔ **`{new_name}`**\n"
+                    f"• Amount: RM {target_bill['amount']:.2f} ➔ **RM {new_amt:.2f}**\n"
+                    f"• Category: `{target_bill['category']}` ➔ **`{new_cat}`**\n"
+                    f"• Day: {target_bill['day_of_month']}th ➔ **{new_day}th**"
+                ),
+                color=discord.Color.gold(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_edit_bill))
+            return
+
+        # 5. REOPEN Task with Button Confirmation
         if payload.reopen_task_id:
             tid = payload.reopen_task_id
             target_task = await db.get_task_by_id(tid)
@@ -468,11 +501,13 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_reopen))
             return
 
-        # 8. Pure Conversational / Casual Chat Handling
+        # 6. Pure Conversational / Casual Chat Handling
         has_actions = bool(
             payload.expenses
             or payload.new_tasks
             or payload.completed_task_ids
+            or payload.add_bill_name
+            or payload.set_budget_category
             or payload.ambiguous_task_note
             or payload.query
         )
@@ -485,7 +520,7 @@ async def on_message(message: discord.Message):
             await message.reply(reply_text)
             return
 
-        # 9. Query / Immediate Summary / Budget Overview / Advice Handling
+        # 7. Query / Immediate Summary / Budget Overview / Advice Handling
         if payload.query:
             q = payload.query
             today_date = now_local.date()
@@ -498,7 +533,7 @@ async def on_message(message: discord.Message):
             if q.query_target == "BILLS":
                 bills = await db.list_recurring_bills()
                 if bills:
-                    b_lines = [f"• **{b['name']}:** RM {b['amount']:.2f} (`{b['category']}`) due on the **{b['day_of_month']}th**" for b in bills]
+                    b_lines = [f"• `[Bill #{b['id']}]` **{b['name']}:** RM {b['amount']:.2f} (`{b['category']}`) due on the **{b['day_of_month']}th**" for b in bills]
                     embed = discord.Embed(title="🔔 Configured Recurring Bills", description="\n".join(b_lines), color=discord.Color.purple())
                 else:
                     embed = discord.Embed(title="🔔 Configured Recurring Bills", description="No recurring bills configured yet. Add one with *'Add recurring bill: Netflix RM 55 on the 15th'*.", color=discord.Color.purple())
@@ -564,7 +599,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed)
             return
 
-        # 10. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
+        # 8. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
         expenses_preview = [
             {
                 "amount": exp.amount,
@@ -656,6 +691,18 @@ async def on_message(message: discord.Message):
                 completed_tasks_details = await db.complete_tasks_by_ids(
                     payload.completed_task_ids, completed_at=now_str
                 )
+
+            # Recurring Bill Saved on Confirm
+            if payload.add_bill_name and payload.add_bill_amount is not None:
+                b_name = payload.add_bill_name
+                b_amt = payload.add_bill_amount
+                b_cat = payload.add_bill_category.value if payload.add_bill_category else "Utilities & Bills"
+                b_day = payload.add_bill_day or 1
+                await db.add_recurring_bill(b_name, b_amt, b_cat, b_day)
+
+            # Budget Limit Saved on Confirm
+            if payload.set_budget_category and payload.set_budget_amount is not None:
+                await db.set_budget(payload.set_budget_category, payload.set_budget_amount)
 
             # Check Budget Utilization & Alerts
             budget_alerts = []

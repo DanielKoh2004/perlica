@@ -500,6 +500,52 @@ class DatabaseManager:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
 
+    async def get_recurring_bill_by_id(self, bill_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific recurring bill by ID."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM recurring_bills WHERE id = ?", (bill_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def update_recurring_bill(
+        self,
+        bill_id: int,
+        name: Optional[str] = None,
+        amount: Optional[float] = None,
+        category: Optional[str] = None,
+        day_of_month: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing recurring bill."""
+        bill = await self.get_recurring_bill_by_id(bill_id)
+        if not bill:
+            return None
+        new_name = name or bill["name"]
+        new_amount = round(amount, 2) if amount is not None else bill["amount"]
+        new_cat = category or bill["category"]
+        new_day = day_of_month if day_of_month is not None else bill["day_of_month"]
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE recurring_bills
+                SET name = ?, amount = ?, category = ?, day_of_month = ?
+                WHERE id = ?
+                """,
+                (new_name, new_amount, new_cat, new_day, bill_id),
+            )
+            await conn.commit()
+        return await self.get_recurring_bill_by_id(bill_id)
+
+    async def delete_recurring_bill(self, bill_id: int) -> Optional[Dict[str, Any]]:
+        """Delete a recurring bill by ID."""
+        bill = await self.get_recurring_bill_by_id(bill_id)
+        if not bill:
+            return None
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM recurring_bills WHERE id = ?", (bill_id,))
+            await conn.commit()
+        return bill
+
     async def list_recurring_bills(self) -> List[Dict[str, Any]]:
         """List all active recurring bills."""
         async with self.get_connection() as conn:
