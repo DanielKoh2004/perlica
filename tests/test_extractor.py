@@ -33,6 +33,9 @@ def test_build_system_prompt_temporal_anchors():
     assert "YESTERDAY is: 2026-08-23 (Sunday)" in prompt
     assert "[ID: 1] Call client A (Priority: HIGH)" in prompt
     assert "[ID: 2] Call client B (Priority: MEDIUM)" in prompt
+    assert "Touch 'n Go" in prompt
+    assert "99 Speedmart" in prompt
+    assert "Mamak" in prompt
 
 
 def test_extracted_payload_casual_defaults():

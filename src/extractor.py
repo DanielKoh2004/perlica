@@ -210,11 +210,19 @@ ACTIVE OPEN TASKS IN DATABASE:
 {tasks_formatted}
 
 EXTRACTION & ZERO-ASSUMPTION RULES:
-1. ZERO-ASSUMPTION POLICY (NEEDS CLARIFICATION):
-   - If the user provides an expense amount without ANY item or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport, Shopping, Utilities)?", and leave expenses=[].
-   - If the user provides clear context (e.g. "RM 15 chicken rice lunch" or "Grab RM 25"), log it immediately without asking.
+1. MALAYSIAN LOCAL CONTEXT & VENDOR MAPPING:
+   - **Transport**: TNG, Touch 'n Go, Touch n Go reload/topup, RFID, Tolls (PLUS, LDP, MEX, SMART), Parking, Petrol/Fuel (RON95, RON97, Diesel, Shell, Petronas, Caltex, BHP, Petron), Grab ride, AirAsia Ride, LRT, MRT, Monorail, KTM, RapidKL.
+   - **Food & Dining**: Mamak, Kopitiam, Hawker, Nasi Kandar, Roti Canai, Teh Tarik, Nasi Lemak, GrabFood, FoodPanda, ShopeeFood, Cafes, Restaurants.
+   - **Groceries**: 99 Speedmart, Speedmart, Lotus's, Jaya Grocer, Village Grocer, Aeon, Econsave, Mydin, NSK, Pasar Malam, Wet Market.
+   - **Utilities & Bills**: TNB (electricity), Air Selangor / Syabas (water), Indah Water (IWK), Astro, Unifi, TIME, Maxis, CelcomDigi, U Mobile, prepaid/postpaid phone reload.
+   - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores.
+   - **Health & Personal**: Watsons, Guardian, Caring, Big Pharmacy, Klinik, Hospital, Gym, Haircut.
 
-2. UNDO, DELETE, EDIT & REOPEN:
+2. ZERO-ASSUMPTION POLICY (NEEDS CLARIFICATION):
+   - If the user provides an expense amount without ANY item, vendor, or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport / TNG, Shopping, Utilities)?", and leave expenses=[].
+   - If the user provides clear local context (e.g. "Reload TNG RM 50", "99 Speedmart RM 32", "RON95 RM 40", "Mamak lunch RM 12"), log it immediately under the correct category without asking.
+
+3. UNDO, DELETE, EDIT & REOPEN:
    - If user says "undo", "cancel that", "undo last": set undo_intent="LAST" (or "EXPENSE"/"TASK").
    - If user says "delete expense #3": set delete_expense_id=3.
    - If user says "delete task #5": set delete_task_id=5.
@@ -222,16 +230,16 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - If user says "update task #4 due date to tomorrow": set edit_task_id=4, edit_task_due_date calculated from tomorrow.
    - If user says "reopen task #1" or "mark task #1 open": set reopen_task_id=1.
 
-3. MULTI-PHASE TASKS:
+4. MULTI-PHASE TASKS:
    - If the user specifies sub-steps or phases (e.g. "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing"), populate TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
 
-4. ON-DEMAND SUMMARIES & RECAPS:
+5. ON-DEMAND SUMMARIES & RECAPS:
    - If the user asks for a summary (e.g. 'summarize today', 'recap my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
 
-5. TASK COMPLETIONS:
+6. TASK COMPLETIONS:
    - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID. If ambiguous, explain in ambiguous_task_note with conflicting task IDs.
 
-6. CASUAL CONVERSATION:
+7. CASUAL CONVERSATION:
    - For greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?'), provide a warm, concise conversational_reply.
 """
 
