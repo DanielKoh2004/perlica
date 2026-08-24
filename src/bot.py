@@ -335,10 +335,16 @@ class QuickUndoView(discord.ui.View):
         self.task_ids = task_ids
         self.goal_deposit = goal_deposit
         self.created_goal_id = created_goal_id
+        self.message: Optional[discord.Message] = None
 
     async def on_timeout(self):
         for child in self.children:
             child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except Exception as e:
+                logger.debug(f"QuickUndoView on_timeout edit note: {e}")
 
     @discord.ui.button(label="Quick Undo (10s)", style=discord.ButtonStyle.danger, emoji="↩️", custom_id="btn_quick_undo")
     async def undo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1176,6 +1182,10 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             created_goal_id=created_goal_id,
         )
         await interaction.response.edit_message(embed=confirmed_embed, view=quick_undo_view)
+        try:
+            quick_undo_view.message = await interaction.original_response()
+        except Exception:
+            pass
 
     preview_embed = format_action_preview(
         payload=payload,
