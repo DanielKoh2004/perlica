@@ -413,6 +413,11 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
 
 12. CASUAL CONVERSATION:
    - For greetings, check-ins, or questions without data logging, provide a warm conversational_reply.
+
+13. PAST & HISTORICAL DATES:
+   - If the user mentions "yesterday", "2 days ago", "on Monday", "on 24 Aug", or any specific date when logging an expense:
+     Always set `occurred_date` in YYYY-MM-DD on the ExpenseItem using the exact date from LOCAL TIME REFERENCE (e.g. if today is 2026-08-25, "yesterday" is "2026-08-24").
+     Example: "spent rm8 on lunch yesterday" -> ExpenseItem(amount=8.0, category=ExpenseCategory.FOOD, note="lunch", occurred_date="2026-08-24")
 """
 
 

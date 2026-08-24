@@ -72,7 +72,8 @@ def format_action_preview(
         lines = []
         for exp in expenses:
             note_str = f" ({exp['note']})" if exp.get("note") else ""
-            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}")
+            date_str = f" `[Date: {exp['occurred_date']}]`" if exp.get("occurred_date") else ""
+            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}{date_str}")
         embed.add_field(
             name=f"💸 Expenses to Log (Total: RM {total:.2f})",
             value="\n".join(lines),
@@ -184,7 +185,8 @@ def format_action_confirmation(
         lines = []
         for exp in inserted_expenses:
             note_str = f" ({exp['note']})" if exp.get("note") else ""
-            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}")
+            date_str = f" `[Date: {exp['created_at'][:10]}]`" if exp.get("created_at") else ""
+            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}{date_str}")
         embed.add_field(
             name=f"💸 Logged Expenses (Total: RM {total:.2f})",
             value="\n".join(lines),
