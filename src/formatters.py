@@ -10,7 +10,7 @@ def format_action_confirmation(
     inserted_tasks: List[Dict[str, Any]],
     completed_tasks: List[Dict[str, Any]],
 ) -> discord.Embed:
-    """Build a rich confirmation embed for logged actions."""
+    """Build a rich confirmation embed for logged actions with hierarchy for multi-phase tasks."""
     embed = discord.Embed(
         title="⚡ Action Processed",
         color=discord.Color.green(),
@@ -29,7 +29,7 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 2. New Tasks
+    # 2. New Tasks (Parent & Phases)
     if inserted_tasks:
         lines = []
         for t in inserted_tasks:
@@ -39,7 +39,17 @@ def format_action_confirmation(
             if t.get("due_time"):
                 due_parts.append(t["due_time"])
             due_str = f" _(Due: {' '.join(due_parts)})_" if due_parts else ""
-            lines.append(f"• `[{t['priority']}]` {t['description']}{due_str} `[ID: #{t['id']}]`")
+
+            # Check if this task has subphases
+            subphases = t.get("subphases", [])
+            if subphases:
+                lines.append(f"• 📁 `[{t['priority']}]` **{t['description']}**{due_str} `[ID: #{t['id']}]`")
+                for s in subphases:
+                    lines.append(f"   └── ⏳ `{s.get('phase_name', 'Phase')}`: {s['description']} `[ID: #{s['id']}]`")
+            else:
+                prefix = f"   └── ⏳ `{t.get('phase_name')}`: " if t.get("parent_id") else "• "
+                lines.append(f"{prefix}`[{t['priority']}]` {t['description']}{due_str} `[ID: #{t['id']}]`")
+
         embed.add_field(
             name="📝 New Tasks Added",
             value="\n".join(lines),
@@ -48,7 +58,10 @@ def format_action_confirmation(
 
     # 3. Completed Tasks
     if completed_tasks:
-        lines = [f"• ~~`[#{t['id']}]` {t['description']}~~" for t in completed_tasks]
+        lines = []
+        for t in completed_tasks:
+            phase_str = f" `{t.get('phase_name')}` " if t.get("phase_name") else " "
+            lines.append(f"• ~~`[#{t['id']}]`{phase_str}{t['description']}~~")
         embed.add_field(
             name="✅ Completed Tasks",
             value="\n".join(lines),
@@ -107,7 +120,9 @@ def format_daily_summary(
         lines = []
         for t in open_tasks:
             due_str = f" _(Due: {t['due_date']})_" if t.get("due_date") else ""
-            lines.append(f"• `[#{t['id']} | {t['priority']}]` {t['description']}{due_str}")
+            prefix = "   └── ⏳ " if t.get("parent_id") else "• "
+            phase_info = f"`{t['phase_name']}`: " if t.get("phase_name") else ""
+            lines.append(f"{prefix}`[#{t['id']} | {t['priority']}]` {phase_info}{t['description']}{due_str}")
         embed.add_field(
             name=f"📋 Remaining Open Tasks ({len(open_tasks)})",
             value="\n".join(lines[:20]) + ("\n...and more" if len(open_tasks) > 20 else ""),
@@ -170,7 +185,9 @@ def format_full_snapshot_summary(
         lines = []
         for t in open_tasks:
             due_str = f" _(Due: {t['due_date']})_" if t.get("due_date") else ""
-            lines.append(f"• `[#{t['id']} | {t['priority']}]` {t['description']}{due_str}")
+            prefix = "   └── ⏳ " if t.get("parent_id") else "• "
+            phase_info = f"`{t['phase_name']}`: " if t.get("phase_name") else ""
+            lines.append(f"{prefix}`[#{t['id']} | {t['priority']}]` {phase_info}{t['description']}{due_str}")
         embed.add_field(
             name=f"📋 Active Open Tasks ({len(open_tasks)})",
             value="\n".join(lines[:15]),
@@ -220,7 +237,10 @@ def format_query_results(
 
     if query.query_target in ("TASKS", "SUMMARY") and tasks is not None:
         if tasks:
-            lines = [f"• `[#{t['id']} | {t['priority']}]` {t['description']}" for t in tasks]
+            lines = []
+            for t in tasks:
+                prefix = "   └── ⏳ " if t.get("parent_id") else "• "
+                lines.append(f"{prefix}`[#{t['id']} | {t['priority']}]` {t['description']}")
             embed.add_field(
                 name=f"📋 Active Tasks ({len(tasks)})",
                 value="\n".join(lines[:20]),
@@ -255,10 +275,10 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
-        name="📝 Creating Tasks",
+        name="📝 Creating Single & Multi-Phase Tasks",
         value=(
             "• `Remind me to submit client invoice tomorrow 5pm`\n"
-            "• `Buy milk and eggs priority high`\n"
+            "• `Create task 'App Redesign' with 3 phases: 1. Wireframes, 2. UI Design, 3. Testing`\n"
             "• `Prepare presentation slides next Monday`"
         ),
         inline=False,
@@ -266,7 +286,7 @@ def format_help_guide() -> discord.Embed:
 
     embed.add_field(
         name="⚡ Compound Multi-Actions",
-        value="• `Spent RM 25 on Grab and finished the monthly report`\n*(Logs expense + marks task as DONE in 1 text!)*",
+        value="• `Spent RM 25 on Grab and finished Phase 1 of App Redesign`\n*(Logs expense + marks sub-phase as DONE in 1 text!)*",
         inline=False,
     )
 
@@ -282,8 +302,8 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
-        name="💬 Casual Conversation",
-        value="• Feel free to say `Good morning`, `I'm tired`, or ask `What should I work on first?`",
+        name="🛡️ Zero-Assumption Policy",
+        value="• If you say `Spent RM 50`, the bot will ask what it was for rather than guessing.",
         inline=False,
     )
 

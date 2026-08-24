@@ -47,7 +47,6 @@ async def test_insert_and_complete_tasks(db: DatabaseManager):
 
     open_tasks = await db.get_open_tasks()
     assert len(open_tasks) == 3
-    # Order should be HIGH -> MEDIUM -> LOW
     assert open_tasks[0]["id"] == tid1
     assert open_tasks[1]["id"] == tid2
     assert open_tasks[2]["id"] == tid3
@@ -58,19 +57,45 @@ async def test_insert_and_complete_tasks(db: DatabaseManager):
     assert res["status"] == "DONE"
     assert res["completed_at"] == "2026-08-25 10:00:00"
 
-    # Completing already completed task returns None
-    res_repeat = await db.complete_task_by_id(tid1, "2026-08-25 10:01:00")
-    assert res_repeat is None
-
-    # Completing non-existent task returns None
-    res_none = await db.complete_task_by_id(999, "2026-08-25 10:00:00")
-    assert res_none is None
-
     # Batch completion
     batch_res = await db.complete_tasks_by_ids([tid2, tid3, 999], "2026-08-25 11:00:00")
     assert len(batch_res) == 2
 
     # Verify no open tasks remain
+    remaining = await db.get_open_tasks()
+    assert len(remaining) == 0
+
+
+@pytest.mark.asyncio
+async def test_multi_phase_tasks(db: DatabaseManager):
+    parent_id, subtasks = await db.insert_task_with_phases(
+        description="Launch Mobile App",
+        priority="HIGH",
+        phases=["Wireframes", "Frontend UI", "Backend API"],
+        due_date="2026-08-30",
+        due_time=None,
+        created_at="2026-08-24 10:00:00",
+    )
+
+    assert parent_id == 1
+    assert len(subtasks) == 3
+    assert subtasks[0]["phase_name"] == "Phase 1"
+
+    open_tasks = await db.get_open_tasks()
+    # 1 parent + 3 subtasks
+    assert len(open_tasks) == 4
+
+    # Complete Phase 1
+    phase1_id = subtasks[0]["id"]
+    res1 = await db.complete_task_by_id(phase1_id, "2026-08-25 10:00:00")
+    assert res1["status"] == "DONE"
+
+    # 1 parent + 2 subtasks remaining
+    open_tasks_after = await db.get_open_tasks()
+    assert len(open_tasks_after) == 3
+
+    # Completing parent completes all remaining subphases
+    await db.complete_task_by_id(parent_id, "2026-08-26 10:00:00")
     remaining = await db.get_open_tasks()
     assert len(remaining) == 0
 

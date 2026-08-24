@@ -10,6 +10,15 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Ordered list of reliable Groq models with automatic fallback
+GROQ_MODEL_CANDIDATES = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+]
+
 
 class ExpenseCategory(str, Enum):
     FOOD = "Food & Dining"
@@ -50,7 +59,7 @@ class TaskPriority(str, Enum):
 class TaskItem(BaseModel):
     description: str = Field(
         ...,
-        description="Clear, actionable task description.",
+        description="Clear, actionable task or parent project title.",
     )
     priority: TaskPriority = Field(
         default=TaskPriority.MEDIUM,
@@ -63,6 +72,10 @@ class TaskItem(BaseModel):
     due_time: Optional[str] = Field(
         default=None,
         description="Due time in HH:MM (24-hour) format if mentioned (e.g. '17:00' for 5pm). Otherwise None.",
+    )
+    phases: List[str] = Field(
+        default_factory=list,
+        description="List of sub-tasks or phases if the user specified a multi-step task (e.g. ['Phase 1: Wireframes', 'Phase 2: UI Design', 'Phase 3: Testing']).",
     )
 
 
@@ -88,11 +101,19 @@ class ExtractedPayload(BaseModel):
     )
     new_tasks: List[TaskItem] = Field(
         default_factory=list,
-        description="Brand new to-do tasks to create. Leave empty list if none.",
+        description="Brand new to-do tasks to create (including multi-phase projects). Leave empty list if none.",
     )
     completed_task_ids: List[int] = Field(
         default_factory=list,
-        description="Exact integer IDs of open tasks from the provided context that the user completed. Leave empty list if none.",
+        description="Exact integer IDs of open tasks or sub-phases from the provided context that the user completed. Leave empty list if none.",
+    )
+    needs_clarification: bool = Field(
+        default=False,
+        description="Set to true if user input was underspecified or ambiguous (e.g. logged amount without item/category) to avoid making assumptions.",
+    )
+    clarification_prompt: Optional[str] = Field(
+        default=None,
+        description="A polite question asking the user for missing details (e.g. 'What was the RM 50 spent on?').",
     )
     ambiguous_task_note: Optional[str] = Field(
         default=None,
@@ -115,16 +136,15 @@ def build_system_prompt(now_local: datetime, open_tasks: List[Dict[str, Any]]) -
     yesterday_str = (now_local - timedelta(days=1)).strftime("%Y-%m-%d (%A)")
 
     if open_tasks:
-        tasks_formatted = "\n".join(
-            [
-                f"- [ID: {t['id']}] {t['description']} (Priority: {t.get('priority', 'MEDIUM')})"
-                for t in open_tasks
-            ]
-        )
+        lines = []
+        for t in open_tasks:
+            parent_info = f" [Sub-phase of #{t['parent_id']}]" if t.get("parent_id") else ""
+            lines.append(f"- [ID: {t['id']}] {t['description']} (Priority: {t.get('priority', 'MEDIUM')}){parent_info}")
+        tasks_formatted = "\n".join(lines)
     else:
         tasks_formatted = "No active open tasks."
 
-    return f"""You are an intelligent, zero-friction Discord personal task & expense tracking assistant and conversational companion.
+    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, and giving smart advice.
 
 LOCAL TIME REFERENCE:
 - Current Local Timestamp: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
@@ -135,27 +155,22 @@ LOCAL TIME REFERENCE:
 ACTIVE OPEN TASKS IN DATABASE:
 {tasks_formatted}
 
-EXTRACTION & INTENT RULES:
-1. ON-DEMAND SUMMARIES & RECAPS:
-   - If the user asks for a summary (e.g. 'summarize today', 'give me a recap of my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
+EXTRACTION & ZERO-ASSUMPTION RULES:
+1. ZERO-ASSUMPTION POLICY (NEEDS CLARIFICATION):
+   - If the user provides an expense amount without ANY item or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport, Shopping, Utilities)?", and leave expenses=[].
+   - If the user provides clear context (e.g. "RM 15 chicken rice lunch" or "Grab RM 25"), log it immediately without asking.
 
-2. QUESTIONS ABOUT EXPENSES & TASKS:
-   - If the user asks specific questions (e.g. 'how much did I spend on food?', 'what tasks are due tomorrow?', 'did I finish the report?'), populate query with query_target='EXPENSES' or 'TASKS' or 'ADVICE', and capture the specific_question.
+2. MULTI-PHASE TASKS:
+   - If the user specifies sub-steps or phases (e.g. "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing"), populate TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
 
-3. CASUAL CONVERSATION & CHAT:
-   - If the user sends casual messages, greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?', 'feeling overwhelmed'), set expenses=[], new_tasks=[], completed_task_ids=[], and provide an engaging, empathetic conversational_reply.
+3. ON-DEMAND SUMMARIES & RECAPS:
+   - If the user asks for a summary (e.g. 'summarize today', 'recap my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
 
-4. EXPENSES:
-   - Extract amount as a numeric float in MYR (e.g., 'RM 15.50 lunch' -> amount=15.50, category='Food & Dining', note='lunch').
-   - Categorize accurately into: Food & Dining, Transport, Groceries, Utilities & Bills, Entertainment, Shopping, Health & Personal, Other.
+4. TASK COMPLETIONS:
+   - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID. If ambiguous, explain in ambiguous_task_note with conflicting task IDs.
 
-5. NEW TASKS:
-   - Extract action items as new_tasks with appropriate priority (HIGH, MEDIUM, LOW).
-   - If a due date is specified (e.g., 'tomorrow', 'tonight', 'next Monday'), calculate the exact YYYY-MM-DD strictly from the LOCAL TIME REFERENCE.
-
-6. TASK COMPLETIONS & DISAMBIGUATION:
-   - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID.
-   - If ambiguous, explain in ambiguous_task_note with the conflicting task IDs.
+5. CASUAL CONVERSATION:
+   - For greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?'), provide a warm, concise conversational_reply.
 """
 
 
@@ -185,7 +200,7 @@ class ExtractionEngine:
         now_local: datetime,
         open_tasks: List[Dict[str, Any]],
     ) -> ExtractedPayload:
-        """Extract structured task, expense, query, or conversational information."""
+        """Extract structured task, expense, query, or conversational information with automatic model fallback."""
         if not text or not text.strip():
             return ExtractedPayload(
                 conversational_reply="I received an empty message."
@@ -194,28 +209,39 @@ class ExtractionEngine:
         client = self._get_client()
         system_prompt = build_system_prompt(now_local, open_tasks)
 
-        try:
-            payload: ExtractedPayload = await client.chat.completions.create(
-                model=self.model,
-                response_model=ExtractedPayload,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0.1,
-                max_retries=2,
-            )
-            return payload
-        except ValidationError as ve:
-            logger.error(f"Pydantic Validation Error in LLM output: {ve}")
-            return ExtractedPayload(
-                conversational_reply="I couldn't structure that input. If you're logging an expense or task, please check the wording."
-            )
-        except Exception as e:
-            logger.error(f"Groq Extraction API Error: {e}", exc_info=True)
-            return ExtractedPayload(
-                conversational_reply="I'm having trouble reaching the extraction service. Please try again shortly."
-            )
+        # Build candidate list starting with preferred model
+        models_to_try = [self.model] + [m for m in GROQ_MODEL_CANDIDATES if m != self.model]
+
+        last_error = None
+        for candidate_model in models_to_try:
+            try:
+                payload: ExtractedPayload = await client.chat.completions.create(
+                    model=candidate_model,
+                    response_model=ExtractedPayload,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    temperature=0.1,
+                    max_retries=1,
+                )
+                self.model = candidate_model
+                return payload
+            except ValidationError as ve:
+                logger.error(f"Pydantic Validation Error in LLM output ({candidate_model}): {ve}")
+                return ExtractedPayload(
+                    conversational_reply="I couldn't structure that input. If you're logging an expense or task, please check the wording."
+                )
+            except Exception as e:
+                err_str = str(e)
+                logger.warning(f"Model {candidate_model} failed ({err_str[:100]}). Trying next candidate if available...")
+                last_error = e
+                continue
+
+        logger.error(f"All Groq model candidates failed: {last_error}", exc_info=True)
+        return ExtractedPayload(
+            conversational_reply="I'm having trouble reaching the extraction service. Please check your Groq API key or try again in a moment."
+        )
 
     async def generate_ai_insight(
         self,
@@ -245,27 +271,31 @@ Tasks Completed: {completed_tasks_str}
 Active Open Tasks: {open_tasks_str}
 """
 
-        try:
-            response = await groq_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are Perlica, an encouraging, sharp personal productivity and financial AI companion. "
-                            "Given the user's live financial and task data, provide a concise, engaging, and highly helpful response. "
-                            "Keep it under 3-4 sentences. Highlight achievements and remind them gently of high-priority tasks."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Context:\n{context}\n\nUser Question/Request: {prompt_topic}",
-                    },
-                ],
-                temperature=0.5,
-                max_tokens=250,
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Failed to generate AI insight: {e}")
-            return "Keep up the momentum! Let me know whenever you want to log new tasks or expenses."
+        models_to_try = [self.model] + [m for m in GROQ_MODEL_CANDIDATES if m != self.model]
+        for candidate in models_to_try:
+            try:
+                response = await groq_client.chat.completions.create(
+                    model=candidate,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are Perlica, an encouraging, sharp personal productivity and financial AI companion. "
+                                "Given the user's live financial and task data, provide a concise, engaging, and highly helpful response. "
+                                "Keep it under 3-4 sentences. Highlight achievements and remind them gently of high-priority tasks."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Context:\n{context}\n\nUser Question/Request: {prompt_topic}",
+                        },
+                    ],
+                    temperature=0.5,
+                    max_tokens=250,
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                logger.warning(f"Insight candidate {candidate} failed. Trying next...")
+                continue
+
+        return "Keep up the great momentum! Let me know whenever you want to log new tasks or expenses."

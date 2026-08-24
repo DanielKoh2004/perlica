@@ -120,6 +120,11 @@ async def on_message(message: discord.Message):
 
         now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
 
+        # 0. Zero-Assumption Clarification Prompt
+        if payload.needs_clarification and payload.clarification_prompt:
+            await message.reply(payload.clarification_prompt)
+            return
+
         # 1. Pure Conversational / Casual Chat Handling
         has_actions = bool(
             payload.expenses
@@ -200,7 +205,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed)
             return
 
-        # 3. Action Ingestion (Expenses, New Tasks, Task Completions)
+        # 3. Action Ingestion (Expenses, Single/Multi-Phase Tasks, Completions)
         inserted_expenses: List[Dict[str, Any]] = []
         for exp in payload.expenses:
             created_at = (
@@ -224,23 +229,47 @@ async def on_message(message: discord.Message):
 
         inserted_tasks: List[Dict[str, Any]] = []
         for task in payload.new_tasks:
-            tid = await db.insert_task(
-                description=task.description,
-                priority=task.priority.value if hasattr(task.priority, "value") else str(task.priority),
-                due_date=task.due_date,
-                due_time=task.due_time,
-                created_at=now_str,
-            )
-            inserted_tasks.append(
-                {
-                    "id": tid,
-                    "description": task.description,
-                    "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
-                    "due_date": task.due_date,
-                    "due_time": task.due_time,
-                    "created_at": now_str,
-                }
-            )
+            priority_val = task.priority.value if hasattr(task.priority, "value") else str(task.priority)
+
+            # Check if task has multiple phases
+            if task.phases:
+                parent_id, subtasks = await db.insert_task_with_phases(
+                    description=task.description,
+                    priority=priority_val,
+                    phases=task.phases,
+                    due_date=task.due_date,
+                    due_time=task.due_time,
+                    created_at=now_str,
+                )
+                inserted_tasks.append(
+                    {
+                        "id": parent_id,
+                        "description": task.description,
+                        "priority": priority_val,
+                        "due_date": task.due_date,
+                        "due_time": task.due_time,
+                        "created_at": now_str,
+                        "subphases": subtasks,
+                    }
+                )
+            else:
+                tid = await db.insert_task(
+                    description=task.description,
+                    priority=priority_val,
+                    due_date=task.due_date,
+                    due_time=task.due_time,
+                    created_at=now_str,
+                )
+                inserted_tasks.append(
+                    {
+                        "id": tid,
+                        "description": task.description,
+                        "priority": priority_val,
+                        "due_date": task.due_date,
+                        "due_time": task.due_time,
+                        "created_at": now_str,
+                    }
+                )
 
         completed_tasks_details: List[Dict[str, Any]] = []
         if payload.completed_task_ids:
