@@ -22,6 +22,7 @@ logger = logging.getLogger("discord_agent")
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.dm_messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 db = DatabaseManager(settings.DATABASE_PATH)
@@ -47,18 +48,17 @@ summary_time = datetime.time(hour=hour, minute=minute, tzinfo=settings.tz)
 
 @tasks.loop(time=summary_time)
 async def daily_summary_loop():
-    """Background scheduled job dispatching daily spending and task summaries."""
-    if not settings.DISCORD_CHANNEL_ID:
-        logger.warning("No DISCORD_CHANNEL_ID configured for daily summary dispatch.")
-        return
+    """Background scheduled job dispatching daily spending and task summaries via DM."""
+    target_user = None
 
-    channel = bot.get_channel(settings.DISCORD_CHANNEL_ID)
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(settings.DISCORD_CHANNEL_ID)
-        except Exception as e:
-            logger.error(f"Failed to fetch channel for daily summary: {e}")
-            return
+    if settings.ALLOWED_USER_ID:
+        target_user = bot.get_user(settings.ALLOWED_USER_ID)
+        if not target_user:
+            try:
+                target_user = await bot.fetch_user(settings.ALLOWED_USER_ID)
+            except Exception as e:
+                logger.error(f"Failed to fetch user {settings.ALLOWED_USER_ID} for DM summary: {e}")
+                return
 
     now_local = datetime.datetime.now(settings.tz)
     today_str = now_local.strftime("%Y-%m-%d")
@@ -67,8 +67,16 @@ async def daily_summary_loop():
     embed = format_daily_summary(expenses, total_spent, open_tasks, today_str)
 
     try:
-        await channel.send(embed=embed)
-        logger.info(f"Dispatched daily summary for {today_str}.")
+        if target_user:
+            await target_user.send(embed=embed)
+            logger.info(f"Dispatched daily summary DM to user {target_user.name} for {today_str}.")
+        elif settings.DISCORD_CHANNEL_ID:
+            channel = bot.get_channel(settings.DISCORD_CHANNEL_ID) or await bot.fetch_channel(settings.DISCORD_CHANNEL_ID)
+            if channel:
+                await channel.send(embed=embed)
+                logger.info(f"Dispatched daily summary to channel for {today_str}.")
+        else:
+            logger.warning("No ALLOWED_USER_ID or DISCORD_CHANNEL_ID configured for daily summary dispatch.")
     except Exception as e:
         logger.error(f"Failed to send daily summary embed: {e}")
 
@@ -79,10 +87,11 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.author.id == bot.user.id:
         return
 
-    # FR-1.1 & Security: Channel and User ID filtering
-    if settings.DISCORD_CHANNEL_ID and message.channel.id != settings.DISCORD_CHANNEL_ID:
+    # Restrict to Direct Messages (DMs) only
+    if message.guild is not None:
         return
 
+    # Security: Restrict exclusively to the designated user ID
     if settings.ALLOWED_USER_ID and message.author.id != settings.ALLOWED_USER_ID:
         return
 
@@ -90,7 +99,7 @@ async def on_message(message: discord.Message):
     if not content:
         return
 
-    # Visual feedback: typing indicator
+    # Visual feedback: typing indicator in DM
     async with message.channel.typing():
         now_local = datetime.datetime.now(settings.tz)
         open_tasks = await db.get_open_tasks()

@@ -13,8 +13,8 @@ class Settings(BaseSettings):
 
     # Discord Configuration
     DISCORD_TOKEN: str = Field(default="", description="Discord bot token")
-    DISCORD_CHANNEL_ID: Optional[int] = Field(default=None, description="Designated private channel ID")
-    ALLOWED_USER_ID: Optional[int] = Field(default=None, description="Restricted user ID")
+    ALLOWED_USER_ID: Optional[int] = Field(default=None, description="Your Discord User ID for DMs")
+    DISCORD_CHANNEL_ID: Optional[int] = Field(default=None, description="Optional channel fallback ID")
 
     # Groq Configuration
     GROQ_API_KEY: str = Field(default="", description="Groq API key")
