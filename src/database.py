@@ -472,13 +472,31 @@ class DatabaseManager:
             await conn.commit()
             return cur.lastrowid
 
-    async def get_due_recurring_bills(self, day_of_month: int) -> List[Dict[str, Any]]:
-        """Fetch active recurring bills due on the specified day of the month."""
+    async def get_due_recurring_bills(self, current_date_or_day: Any) -> List[Dict[str, Any]]:
+        """
+        Fetch active recurring bills due on current_date.
+        Handles month-end boundary clipping (e.g. Feb 28 catches bills set for 28th, 29th, 30th, 31st).
+        """
+        import calendar
+        from datetime import date, datetime
+
+        if isinstance(current_date_or_day, (date, datetime)):
+            day = current_date_or_day.day
+            _, last_day = calendar.monthrange(current_date_or_day.year, current_date_or_day.month)
+            is_last_day = (day == last_day)
+        else:
+            day = int(current_date_or_day)
+            is_last_day = False
+
         async with self.get_connection() as conn:
-            async with conn.execute(
-                "SELECT * FROM recurring_bills WHERE day_of_month = ? AND is_active = 1",
-                (day_of_month,),
-            ) as cur:
+            if is_last_day:
+                query = "SELECT * FROM recurring_bills WHERE day_of_month >= ? AND is_active = 1"
+                params = (day,)
+            else:
+                query = "SELECT * FROM recurring_bills WHERE day_of_month = ? AND is_active = 1"
+                params = (day,)
+
+            async with conn.execute(query, params) as cur:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
 

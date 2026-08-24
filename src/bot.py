@@ -152,7 +152,7 @@ async def morning_briefing_loop():
     day_of_month = now_local.day
 
     open_tasks = await db.get_open_tasks()
-    due_bills = await db.get_due_recurring_bills(day_of_month)
+    due_bills = await db.get_due_recurring_bills(now_local.date())
     budget_status = await db.get_budget_status(month_str)
 
     embed = format_morning_briefing(open_tasks, due_bills, budget_status, today_str)

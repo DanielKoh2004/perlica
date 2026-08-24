@@ -308,19 +308,39 @@ class ExtractionEngine:
         return self._instructor_client
 
     async def transcribe_audio(self, audio_file_tuple: Tuple[str, bytes]) -> str:
-        """Transcribe voice note or audio bytes using Groq's whisper-large-v3-turbo."""
+        """
+        Transcribe voice note or audio bytes using Groq's whisper-large-v3-turbo.
+        Properly handles Discord mobile .ogg (Opus) files and other formats.
+        """
+        import io
         groq_client = self._get_groq_client()
-        filename, file_bytes = audio_file_tuple
+        raw_filename, file_bytes = audio_file_tuple
+
+        # Determine normalized filename and MIME type
+        lower_name = raw_filename.lower()
+        if lower_name.endswith(".ogg") or "voice-message" in lower_name:
+            filename = "audio.ogg"
+        elif lower_name.endswith(".mp3"):
+            filename = "audio.mp3"
+        elif lower_name.endswith(".m4a"):
+            filename = "audio.m4a"
+        elif lower_name.endswith(".wav"):
+            filename = "audio.wav"
+        else:
+            filename = "audio.ogg"
+
         try:
+            audio_buffer = io.BytesIO(file_bytes)
+            audio_buffer.name = filename
+
             transcription = await groq_client.audio.transcriptions.create(
-                file=(filename, file_bytes),
+                file=audio_buffer,
                 model="whisper-large-v3-turbo",
                 response_format="json",
-                language="en",
             )
             return transcription.text.strip()
         except Exception as e:
-            logger.error(f"Whisper transcription failed: {e}", exc_info=True)
+            logger.error(f"Whisper transcription failed for {filename}: {e}", exc_info=True)
             return ""
 
     async def extract_information(

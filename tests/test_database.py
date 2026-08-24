@@ -1,3 +1,4 @@
+from datetime import date
 import pytest
 import pytest_asyncio
 from src.database import DatabaseManager
@@ -56,19 +57,53 @@ async def test_budgets_and_status(db: DatabaseManager):
 
 
 @pytest.mark.asyncio
-async def test_recurring_bills(db: DatabaseManager):
-    bid1 = await db.add_recurring_bill("Unifi", 139.0, "Utilities & Bills", 1)
-    bid2 = await db.add_recurring_bill("Netflix", 55.0, "Entertainment", 15)
+async def test_timezone_month_boundary_drift(db: DatabaseManager):
+    """Verify expenses at 2:00 AM on Sept 1st strictly belong to September, not August."""
+    await db.set_budget("Food & Dining", 600.0)
 
-    assert bid1 == 1
-    assert bid2 == 2
+    # 2:00 AM Sept 1st local Malaysia time
+    await db.insert_expense(28.0, "Food & Dining", "Late supper", "2026-09-01 02:00:00")
 
-    due_on_1st = await db.get_due_recurring_bills(1)
-    assert len(due_on_1st) == 1
-    assert due_on_1st[0]["name"] == "Unifi"
+    aug_status = await db.get_budget_status("2026-08")
+    sep_status = await db.get_budget_status("2026-09")
 
-    all_bills = await db.list_recurring_bills()
-    assert len(all_bills) == 2
+    aug_food = next(s for s in aug_status if s["category"] == "Food & Dining")
+    sep_food = next(s for s in sep_status if s["category"] == "Food & Dining")
+
+    assert aug_food["spent"] == 0.0
+    assert sep_food["spent"] == 28.0
+
+
+@pytest.mark.asyncio
+async def test_recurring_bills_month_end_clipping(db: DatabaseManager):
+    """Verify bills on the 31st/30th trigger properly in short months (Feb 28, Apr 30)."""
+    await db.add_recurring_bill("Rent", 1500.0, "Utilities & Bills", 31)
+    await db.add_recurring_bill("Gym", 150.0, "Health & Personal", 30)
+    await db.add_recurring_bill("Spotify", 16.90, "Entertainment", 15)
+
+    # 1. February 28th (Non-leap year last day) -> should catch bills on 30th & 31st
+    feb_28_bills = await db.get_due_recurring_bills(date(2026, 2, 28))
+    feb_names = [b["name"] for b in feb_28_bills]
+    assert "Rent" in feb_names
+    assert "Gym" in feb_names
+    assert "Spotify" not in feb_names
+
+    # 2. April 30th (30-day month last day) -> should catch 30th & 31st bills
+    apr_30_bills = await db.get_due_recurring_bills(date(2026, 4, 30))
+    apr_names = [b["name"] for b in apr_30_bills]
+    assert "Rent" in apr_names
+    assert "Gym" in apr_names
+
+    # 3. March 30th (31-day month, NOT last day) -> should catch ONLY 30th bill
+    mar_30_bills = await db.get_due_recurring_bills(date(2026, 3, 30))
+    mar_names = [b["name"] for b in mar_30_bills]
+    assert "Gym" in mar_names
+    assert "Rent" not in mar_names
+
+    # 4. March 15th (Regular day) -> should catch ONLY 15th bill
+    mar_15_bills = await db.get_due_recurring_bills(date(2026, 3, 15))
+    assert len(mar_15_bills) == 1
+    assert mar_15_bills[0]["name"] == "Spotify"
 
 
 @pytest.mark.asyncio
