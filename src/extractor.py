@@ -67,13 +67,17 @@ class TaskItem(BaseModel):
 
 
 class QueryScope(BaseModel):
-    query_target: Literal["EXPENSES", "TASKS", "SUMMARY"] = Field(
+    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "GENERAL"] = Field(
         ...,
-        description="Target dataset to view.",
+        description="Target dataset or intent to view/analyze.",
     )
-    timeframe: Literal["TODAY", "THIS_WEEK", "THIS_MONTH", "ALL_TIME"] = Field(
+    timeframe: Literal["TODAY", "YESTERDAY", "THIS_WEEK", "THIS_MONTH", "ALL_TIME"] = Field(
         default="TODAY",
-        description="Timeframe for the query.",
+        description="Timeframe for the query or summary.",
+    )
+    specific_question: Optional[str] = Field(
+        default=None,
+        description="The specific question the user asked (e.g. 'how much did I spend on food?' or 'what should I work on next?').",
     )
 
 
@@ -96,11 +100,11 @@ class ExtractedPayload(BaseModel):
     )
     query: Optional[QueryScope] = Field(
         default=None,
-        description="Populate ONLY if the user is explicitly requesting a summary, report, or status list. Otherwise None.",
+        description="Populate if the user is requesting a summary, report, status list, spending analysis, or asking a question about tasks/budget.",
     )
     conversational_reply: Optional[str] = Field(
         default=None,
-        description="Friendly response ONLY if the message was general conversation, greeting, status update, or unparseable input.",
+        description="Friendly response if the message was general conversation, greeting, status update, advice request, or casual chat.",
     )
 
 
@@ -120,7 +124,7 @@ def build_system_prompt(now_local: datetime, open_tasks: List[Dict[str, Any]]) -
     else:
         tasks_formatted = "No active open tasks."
 
-    return f"""You are an intelligent, zero-friction Discord personal assistant tracking expenses and daily tasks.
+    return f"""You are an intelligent, zero-friction Discord personal task & expense tracking assistant and conversational companion.
 
 LOCAL TIME REFERENCE:
 - Current Local Timestamp: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
@@ -131,30 +135,27 @@ LOCAL TIME REFERENCE:
 ACTIVE OPEN TASKS IN DATABASE:
 {tasks_formatted}
 
-EXTRACTION RULES:
-1. CASUAL / NON-ACTIONABLE MESSAGES:
-   - If the user sends casual conversation, greetings, jokes, or status updates with no actionable expenses, tasks, or queries (e.g., 'I just woke up', 'hello bot', 'good morning', 'thanks!'), DO NOT invent or create dummy expenses or tasks.
-   - Set expenses=[], new_tasks=[], completed_task_ids=[], query=None, and provide a warm, brief conversational_reply.
+EXTRACTION & INTENT RULES:
+1. ON-DEMAND SUMMARIES & RECAPS:
+   - If the user asks for a summary (e.g. 'summarize today', 'give me a recap of my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
 
-2. EXPENSES:
-   - Extract amount as a numeric float in MYR (e.g., "RM 15.50 lunch" -> amount=15.50, category='Food & Dining', note='lunch').
+2. QUESTIONS ABOUT EXPENSES & TASKS:
+   - If the user asks specific questions (e.g. 'how much did I spend on food?', 'what tasks are due tomorrow?', 'did I finish the report?'), populate query with query_target='EXPENSES' or 'TASKS' or 'ADVICE', and capture the specific_question.
+
+3. CASUAL CONVERSATION & CHAT:
+   - If the user sends casual messages, greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?', 'feeling overwhelmed'), set expenses=[], new_tasks=[], completed_task_ids=[], and provide an engaging, empathetic conversational_reply.
+
+4. EXPENSES:
+   - Extract amount as a numeric float in MYR (e.g., 'RM 15.50 lunch' -> amount=15.50, category='Food & Dining', note='lunch').
    - Categorize accurately into: Food & Dining, Transport, Groceries, Utilities & Bills, Entertainment, Shopping, Health & Personal, Other.
-   - If the expense occurred yesterday, set occurred_date to yesterday's YYYY-MM-DD.
 
-3. NEW TASKS:
+5. NEW TASKS:
    - Extract action items as new_tasks with appropriate priority (HIGH, MEDIUM, LOW).
-   - If a due date is specified (e.g., "tomorrow", "tonight", "next Monday"), calculate the exact YYYY-MM-DD strictly from the LOCAL TIME REFERENCE.
+   - If a due date is specified (e.g., 'tomorrow', 'tonight', 'next Monday'), calculate the exact YYYY-MM-DD strictly from the LOCAL TIME REFERENCE.
 
-4. TASK COMPLETIONS & DISAMBIGUATION:
-   - If the user states they completed a task, check the ACTIVE OPEN TASKS list.
-   - If there is an exact or unambiguous match, add its integer ID to completed_task_ids.
-   - If multiple active tasks match the user's description (e.g. "done with the call" when tasks exist for "Call client A" and "Call client B"), DO NOT guess. Leave completed_task_ids empty and explain in ambiguous_task_note which task IDs are matching so the user can clarify.
-
-5. STATUS QUERIES:
-   - If the user asks to view expenses or tasks (e.g. "what are my open tasks?", "how much did I spend today?"), populate the query field.
-
-6. STRICT GUARDRAIL:
-   - Never populate query, new_tasks, or completed_task_ids unless explicitly mentioned or requested in the user's input.
+6. TASK COMPLETIONS & DISAMBIGUATION:
+   - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID.
+   - If ambiguous, explain in ambiguous_task_note with the conflicting task IDs.
 """
 
 
@@ -165,11 +166,16 @@ class ExtractionEngine:
         self._groq_client = None
         self._instructor_client = None
 
+    def _get_groq_client(self) -> AsyncGroq:
+        if not self._groq_client:
+            self._groq_client = AsyncGroq(api_key=self.api_key)
+        return self._groq_client
+
     def _get_client(self):
         if not self._instructor_client:
-            self._groq_client = AsyncGroq(api_key=self.api_key)
+            raw_client = self._get_groq_client()
             self._instructor_client = instructor.from_groq(
-                self._groq_client, mode=instructor.Mode.JSON
+                raw_client, mode=instructor.Mode.JSON
             )
         return self._instructor_client
 
@@ -179,7 +185,7 @@ class ExtractionEngine:
         now_local: datetime,
         open_tasks: List[Dict[str, Any]],
     ) -> ExtractedPayload:
-        """Extract structured task and expense information from raw message."""
+        """Extract structured task, expense, query, or conversational information."""
         if not text or not text.strip():
             return ExtractedPayload(
                 conversational_reply="I received an empty message."
@@ -210,3 +216,56 @@ class ExtractionEngine:
             return ExtractedPayload(
                 conversational_reply="I'm having trouble reaching the extraction service. Please try again shortly."
             )
+
+    async def generate_ai_insight(
+        self,
+        prompt_topic: str,
+        snapshot_data: Dict[str, Any],
+        now_local: datetime,
+    ) -> str:
+        """Generate smart AI commentary or answer based on real-time database snapshot."""
+        groq_client = self._get_groq_client()
+
+        expenses_summary = ", ".join(
+            [f"{cat}: RM {amt:.2f}" for cat, amt in snapshot_data.get("category_breakdown", {}).items()]
+        ) or "None"
+
+        completed_tasks_str = ", ".join(
+            [t["description"] for t in snapshot_data.get("completed_tasks", [])]
+        ) or "None"
+
+        open_tasks_str = ", ".join(
+            [f"[{t['priority']}] {t['description']}" for t in snapshot_data.get("open_tasks", [])]
+        ) or "None"
+
+        context = f"""Current Local Time: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
+Total Spent: RM {snapshot_data.get('total_spent', 0.0):.2f}
+Spending by Category: {expenses_summary}
+Tasks Completed: {completed_tasks_str}
+Active Open Tasks: {open_tasks_str}
+"""
+
+        try:
+            response = await groq_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Perlica, an encouraging, sharp personal productivity and financial AI companion. "
+                            "Given the user's live financial and task data, provide a concise, engaging, and highly helpful response. "
+                            "Keep it under 3-4 sentences. Highlight achievements and remind them gently of high-priority tasks."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context:\n{context}\n\nUser Question/Request: {prompt_topic}",
+                    },
+                ],
+                temperature=0.5,
+                max_tokens=250,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate AI insight: {e}")
+            return "Keep up the momentum! Let me know whenever you want to log new tasks or expenses."

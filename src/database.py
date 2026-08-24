@@ -1,3 +1,4 @@
+import os
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Tuple, Any, AsyncGenerator
@@ -16,7 +17,6 @@ class DatabaseManager:
 
     async def init_db(self) -> None:
         """Initialize SQLite database tables and indexes."""
-        import os
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
@@ -157,6 +157,26 @@ class DatabaseManager:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    async def get_completed_tasks(
+        self, target_date_str: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch completed tasks, optionally filtered by completion date."""
+        async with self.get_connection() as conn:
+            if target_date_str:
+                query = """
+                    SELECT * FROM tasks
+                    WHERE status = 'DONE' AND substr(completed_at, 1, 10) = ?
+                    ORDER BY completed_at DESC
+                """
+                params = (target_date_str,)
+            else:
+                query = "SELECT * FROM tasks WHERE status = 'DONE' ORDER BY completed_at DESC"
+                params = ()
+
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
     async def get_daily_summary(
         self, target_date_str: str
     ) -> Tuple[List[Dict[str, Any]], float, List[Dict[str, Any]]]:
@@ -164,7 +184,6 @@ class DatabaseManager:
         Fetch expenses on target_date_str (YYYY-MM-DD), total spending, and all active open tasks.
         """
         async with self.get_connection() as conn:
-            # Query today's expenses
             async with conn.execute(
                 """
                 SELECT * FROM expenses
@@ -180,6 +199,28 @@ class DatabaseManager:
 
         open_tasks = await self.get_open_tasks()
         return expenses, round(total_spent, 2), open_tasks
+
+    async def get_full_snapshot(
+        self,
+        start_date_str: Optional[str] = None,
+        end_date_str: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch a complete financial and task snapshot for a given date or range.
+        """
+        expenses, total_spent, breakdown = await self.get_expenses_summary(
+            start_date_str, end_date_str
+        )
+        open_tasks = await self.get_open_tasks()
+        completed_tasks = await self.get_completed_tasks(start_date_str if start_date_str == end_date_str else None)
+
+        return {
+            "expenses": expenses,
+            "total_spent": total_spent,
+            "category_breakdown": breakdown,
+            "open_tasks": open_tasks,
+            "completed_tasks": completed_tasks,
+        }
 
     async def get_expenses_summary(
         self,

@@ -3,7 +3,9 @@ from src.extractor import ExtractedPayload, QueryScope
 from src.formatters import (
     format_action_confirmation,
     format_daily_summary,
+    format_full_snapshot_summary,
     format_query_results,
+    format_help_guide,
 )
 
 
@@ -55,6 +57,19 @@ def test_format_daily_summary():
     assert any("Remaining Open Tasks" in name for name in field_names)
 
 
+def test_format_full_snapshot_summary():
+    snapshot = {
+        "total_spent": 50.0,
+        "category_breakdown": {"Food & Dining": 30.0, "Transport": 20.0},
+        "completed_tasks": [{"id": 1, "description": "Write report"}],
+        "open_tasks": [{"id": 2, "description": "Send email", "priority": "HIGH", "due_date": "2026-08-25"}],
+    }
+    embed = format_full_snapshot_summary(snapshot, "Today — 2026-08-24", "You had a great day!")
+    assert isinstance(embed, discord.Embed)
+    assert "Executive Summary" in embed.title
+    assert "AI Digest" in embed.description
+
+
 def test_format_query_results():
     query = QueryScope(query_target="EXPENSES", timeframe="TODAY")
     expenses = [{"amount": 25.0, "category": "Food & Dining"}]
@@ -68,3 +83,9 @@ def test_format_query_results():
     )
     assert isinstance(embed, discord.Embed)
     assert "EXPENSES - TODAY" in embed.title
+
+
+def test_format_help_guide():
+    embed = format_help_guide()
+    assert isinstance(embed, discord.Embed)
+    assert "Quick Start Guide" in embed.title

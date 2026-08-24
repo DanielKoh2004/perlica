@@ -1,6 +1,6 @@
-from typing import Optional
+from typing import Optional, Any
 from zoneinfo import ZoneInfo
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     DATABASE_PATH: str = Field(default="tracker.db", description="Path to SQLite database")
     TIMEZONE: str = Field(default="Asia/Kuala_Lumpur", description="IANA timezone name")
     DAILY_SUMMARY_TIME: str = Field(default="22:00", description="Daily summary dispatch time HH:MM")
+
+    @field_validator("ALLOWED_USER_ID", "DISCORD_CHANNEL_ID", mode="before")
+    @classmethod
+    def parse_optional_int(cls, value: Any) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            val_clean = value.strip()
+            if not val_clean:
+                return None
+            if val_clean.isdigit():
+                return int(val_clean)
+        if isinstance(value, int):
+            return value
+        return None
 
     @property
     def tz(self) -> ZoneInfo:

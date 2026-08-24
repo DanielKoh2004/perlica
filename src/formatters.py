@@ -63,7 +63,7 @@ def format_action_confirmation(
             inline=False,
         )
 
-    # 5. Conversational Reply fallback (if any additional note)
+    # 5. Conversational Reply fallback
     if payload.conversational_reply and not inserted_expenses and not inserted_tasks and not completed_tasks and not payload.ambiguous_task_note:
         embed.description = payload.conversational_reply
 
@@ -84,7 +84,6 @@ def format_daily_summary(
 
     # Spending Section
     if expenses:
-        # Category aggregation
         cat_map: Dict[str, float] = {}
         for exp in expenses:
             cat = exp["category"]
@@ -124,18 +123,85 @@ def format_daily_summary(
     return embed
 
 
+def format_full_snapshot_summary(
+    snapshot: Dict[str, Any],
+    timeframe_title: str,
+    ai_digest: Optional[str] = None,
+) -> discord.Embed:
+    """Build a comprehensive on-demand summary embed with financial and productivity stats."""
+    embed = discord.Embed(
+        title=f"📊 Executive Summary ({timeframe_title})",
+        color=discord.Color.blue(),
+    )
+
+    if ai_digest:
+        embed.description = f"💡 **AI Digest:**\n{ai_digest}\n"
+
+    # 1. Finances
+    total_spent = snapshot.get("total_spent", 0.0)
+    cat_breakdown = snapshot.get("category_breakdown", {})
+    if cat_breakdown:
+        breakdown_lines = [f"• **{k}:** RM {v:.2f}" for k, v in cat_breakdown.items()]
+        embed.add_field(
+            name=f"💸 Total Expenditure (RM {total_spent:.2f})",
+            value="\n".join(breakdown_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="💸 Expenditure",
+            value="RM 0.00 recorded for this period.",
+            inline=False,
+        )
+
+    # 2. Accomplished Tasks
+    completed = snapshot.get("completed_tasks", [])
+    if completed:
+        lines = [f"• ~~`[#{t['id']}]` {t['description']}~~" for t in completed]
+        embed.add_field(
+            name=f"✅ Completed Items ({len(completed)})",
+            value="\n".join(lines[:15]),
+            inline=False,
+        )
+
+    # 3. Pending Open Tasks
+    open_tasks = snapshot.get("open_tasks", [])
+    if open_tasks:
+        lines = []
+        for t in open_tasks:
+            due_str = f" _(Due: {t['due_date']})_" if t.get("due_date") else ""
+            lines.append(f"• `[#{t['id']} | {t['priority']}]` {t['description']}{due_str}")
+        embed.add_field(
+            name=f"📋 Active Open Tasks ({len(open_tasks)})",
+            value="\n".join(lines[:15]),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📋 Active Tasks",
+            value="🎉 No open tasks! You are all caught up.",
+            inline=False,
+        )
+
+    return embed
+
+
 def format_query_results(
     query: QueryScope,
     expenses: Optional[List[Dict[str, Any]]] = None,
     total_spent: Optional[float] = None,
     category_breakdown: Optional[Dict[str, float]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    ai_answer: Optional[str] = None,
 ) -> discord.Embed:
     """Format on-demand query results."""
     embed = discord.Embed(
-        title=f"🔍 Query Results ({query.query_target} - {query.timeframe})",
+        title=f"🔍 Status Report ({query.query_target} - {query.timeframe})",
         color=discord.Color.blurple(),
     )
+
+    if ai_answer:
+        embed.description = ai_answer
 
     if query.query_target in ("EXPENSES", "SUMMARY") and expenses is not None:
         if expenses:
@@ -166,5 +232,59 @@ def format_query_results(
                 value="No open tasks found.",
                 inline=False,
             )
+
+    return embed
+
+
+def format_help_guide() -> discord.Embed:
+    """Build a comprehensive guide embed showing how to interact with the bot."""
+    embed = discord.Embed(
+        title="📖 Perlica Personal Agent — Quick Start Guide",
+        description="Just send natural sentences directly in this DM! Here are some examples of what you can say:",
+        color=discord.Color.teal(),
+    )
+
+    embed.add_field(
+        name="💸 Logging Expenses",
+        value=(
+            "• `RM 15.50 chicken rice for lunch`\n"
+            "• `Spent 45 on petrol and 12 on toll`\n"
+            "• `Yesterday paid RM 80 for electricity bill`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📝 Creating Tasks",
+        value=(
+            "• `Remind me to submit client invoice tomorrow 5pm`\n"
+            "• `Buy milk and eggs priority high`\n"
+            "• `Prepare presentation slides next Monday`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="⚡ Compound Multi-Actions",
+        value="• `Spent RM 25 on Grab and finished the monthly report`\n*(Logs expense + marks task as DONE in 1 text!)*",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📊 Immediate Summaries & Insights",
+        value=(
+            "• `Summarize today` or `Recap my day`\n"
+            "• `How much did I spend this week?`\n"
+            "• `What are my open tasks?`\n"
+            "• `Give me advice on my budget`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="💬 Casual Conversation",
+        value="• Feel free to say `Good morning`, `I'm tired`, or ask `What should I work on first?`",
+        inline=False,
+    )
 
     return embed

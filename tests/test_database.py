@@ -73,3 +73,17 @@ async def test_insert_and_complete_tasks(db: DatabaseManager):
     # Verify no open tasks remain
     remaining = await db.get_open_tasks()
     assert len(remaining) == 0
+
+
+@pytest.mark.asyncio
+async def test_full_snapshot(db: DatabaseManager):
+    await db.insert_expense(20.00, "Food & Dining", "Nasi Lemak", "2026-08-24 09:00:00")
+    tid = await db.insert_task("Read paper", "LOW", created_at="2026-08-24 09:00:00")
+    await db.complete_task_by_id(tid, "2026-08-24 11:00:00")
+    await db.insert_task("Prepare demo", "HIGH", created_at="2026-08-24 12:00:00")
+
+    snapshot = await db.get_full_snapshot("2026-08-24", "2026-08-24")
+    assert snapshot["total_spent"] == 20.00
+    assert len(snapshot["completed_tasks"]) == 1
+    assert len(snapshot["open_tasks"]) == 1
+    assert snapshot["open_tasks"][0]["description"] == "Prepare demo"
