@@ -215,7 +215,8 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - **Food & Dining**: Mamak, Kopitiam, Hawker, Nasi Kandar, Roti Canai, Teh Tarik, Nasi Lemak, GrabFood, FoodPanda, ShopeeFood, Cafes, Restaurants.
    - **Groceries**: 99 Speedmart, Speedmart, Lotus's, Jaya Grocer, Village Grocer, Aeon, Econsave, Mydin, NSK, Pasar Malam, Wet Market.
    - **Utilities & Bills**: TNB (electricity), Air Selangor / Syabas (water), Indah Water (IWK), Astro, Unifi, TIME, Maxis, CelcomDigi, U Mobile, prepaid/postpaid phone reload.
-   - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores.
+   - **Entertainment**: In-game top-ups, monthly cards & passes (Genshin Welkin Moon, Honkai Star Rail Express Pass, MLBB diamonds, Valorant Points, PUBG UC, Roblox Robux, Battle Pass), Gaming stores & reload (Codashop, UniPin, Razer Gold, Steam, PlayStation PSN, Nintendo eShop), Subscriptions (Discord Nitro, Spotify, Netflix, YouTube Premium, Disney+, cinema tickets).
+   - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores, Gadgets, Clothes.
    - **Health & Personal**: Watsons, Guardian, Caring, Big Pharmacy, Klinik, Hospital, Gym, Haircut.
 
 2. ZERO-ASSUMPTION POLICY (NEEDS CLARIFICATION):
