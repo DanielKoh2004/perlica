@@ -441,6 +441,78 @@ class ExtractionEngine:
             conversational_reply="I'm having trouble reaching the extraction service. Please check your Groq API key or try again in a moment."
         )
 
+    async def extract_from_image(
+        self,
+        image_bytes: bytes,
+        filename: str,
+        now_local: datetime,
+        open_tasks: List[Dict[str, Any]],
+        recurring_bills: Optional[List[Dict[str, Any]]] = None,
+    ) -> ExtractedPayload:
+        """Extract expense data directly from a receipt, invoice, or screenshot image using Groq Vision."""
+        import base64
+        import json
+
+        groq_client = self._get_groq_client()
+        ext = filename.lower().split(".")[-1] if "." in filename else "jpeg"
+        mime_type = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
+        b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        data_url = f"data:{mime_type};base64,{b64_img}"
+
+        vision_models = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
+        system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills)
+
+        ocr_prompt = (
+            "Analyze this receipt or bill image. Identify the merchant/store name, total amount spent in MYR (or currency number), "
+            "and appropriate category (Food & Dining, Groceries, Transport, Utilities & Bills, Entertainment, Shopping, Health & Personal, Investments & Savings). "
+            "Return structured JSON matching: "
+            '{"expenses": [{"amount": <number>, "category": "<Category>", "note": "<Store/Item name>"}]}'
+        )
+
+        for v_model in vision_models:
+            try:
+                response = await groq_client.chat.completions.create(
+                    model=v_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": ocr_prompt},
+                                {"type": "image_url", "image_url": {"url": data_url}},
+                            ],
+                        },
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                )
+                raw_json = json.loads(response.choices[0].message.content)
+                expenses = []
+                for item in raw_json.get("expenses", []):
+                    cat_val = item.get("category", "Other")
+                    matched_cat = ExpenseCategory.OTHER
+                    for c in ExpenseCategory:
+                        if c.value.lower() == str(cat_val).lower():
+                            matched_cat = c
+                            break
+                    expenses.append(
+                        ExpenseItem(
+                            amount=float(item.get("amount", 0.0)),
+                            category=matched_cat,
+                            note=item.get("note") or "Receipt scan",
+                        )
+                    )
+                if expenses:
+                    return ExtractedPayload(expenses=expenses)
+            except Exception as e:
+                logger.warning(f"Vision model {v_model} failed: {e}. Trying next vision model if available...")
+                continue
+
+        # If vision models unavailable or failed
+        return ExtractedPayload(
+            conversational_reply="I received your image, but couldn't read the receipt details. You can log it by typing e.g. *'99 Speedmart RM 35.50'*."
+        )
+
     async def generate_ai_insight(
         self,
         prompt_topic: str,

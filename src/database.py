@@ -1,6 +1,7 @@
 import os
 import io
 import csv
+from datetime import date
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Tuple, Any, AsyncGenerator
@@ -656,3 +657,164 @@ class DatabaseManager:
                 ]
             )
         return output.getvalue()
+
+    # --- ADVANCED UI/UX AGGREGATES & METRICS ---
+
+    async def get_productivity_streak(self, today_str: str) -> Dict[str, Any]:
+        """
+        Calculate consecutive active logging days (days with logged expenses or completed tasks).
+        Also counts tasks completed in the current calendar week.
+        """
+        from datetime import datetime, timedelta
+
+        # Get all distinct active dates
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT DISTINCT substr(created_at, 1, 10) as log_date FROM expenses
+                UNION
+                SELECT DISTINCT substr(completed_at, 1, 10) as log_date FROM tasks WHERE status = 'DONE' AND completed_at IS NOT NULL
+                ORDER BY log_date DESC
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+                active_dates = {r["log_date"] for r in rows}
+
+        today_dt = datetime.strptime(today_str, "%Y-%m-%d").date()
+        
+        # Calculate consecutive streak leading up to today or yesterday
+        streak = 0
+        check_dt = today_dt
+        if check_dt.strftime("%Y-%m-%d") not in active_dates:
+            check_dt = today_dt - timedelta(days=1)
+
+        while check_dt.strftime("%Y-%m-%d") in active_dates:
+            streak += 1
+            check_dt -= timedelta(days=1)
+
+        # Count tasks completed this week (Monday to Sunday)
+        start_of_week = (today_dt - timedelta(days=today_dt.weekday())).strftime("%Y-%m-%d")
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT COUNT(*) as completed_count FROM tasks
+                WHERE status = 'DONE' AND substr(completed_at, 1, 10) >= ?
+                """,
+                (start_of_week,),
+            ) as cur:
+                row = await cur.fetchone()
+                completed_this_week = row["completed_count"] if row else 0
+
+        return {
+            "streak_days": streak,
+            "completed_this_week": completed_this_week,
+        }
+
+    async def get_spending_pace(self, today_str: str) -> Dict[str, Any]:
+        """
+        Calculate 7-day spending pace and daily spending history for monospaced sparkline rendering.
+        """
+        from datetime import datetime, timedelta
+
+        today_dt = datetime.strptime(today_str, "%Y-%m-%d").date()
+        seven_days_ago = (today_dt - timedelta(days=6)).strftime("%Y-%m-%d")
+
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT substr(created_at, 1, 10) as day_date, SUM(amount) as daily_total
+                FROM expenses
+                WHERE substr(created_at, 1, 10) BETWEEN ? AND ?
+                GROUP BY day_date
+                """,
+                (seven_days_ago, today_str),
+            ) as cur:
+                rows = await cur.fetchall()
+                day_map = {r["day_date"]: round(r["daily_total"], 2) for r in rows}
+
+        daily_series = []
+        for i in range(6, -1, -1):
+            d_str = (today_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+            daily_series.append(day_map.get(d_str, 0.0))
+
+        today_spend = daily_series[-1]
+        seven_day_avg = round(sum(daily_series) / 7.0, 2)
+
+        if seven_day_avg > 0:
+            diff_pct = round(((today_spend - seven_day_avg) / seven_day_avg) * 100, 1)
+        else:
+            diff_pct = 0.0
+
+        return {
+            "daily_series": daily_series,
+            "today_spend": today_spend,
+            "seven_day_avg": seven_day_avg,
+            "diff_pct": diff_pct,
+        }
+
+    async def get_upcoming_recurring_bills(self, current_date: date, days_ahead: int = 3) -> List[Dict[str, Any]]:
+        """
+        Fetch active recurring bills due within the next N days (1 to days_ahead),
+        excluding bills due today.
+        """
+        import calendar
+        from datetime import timedelta
+
+        upcoming = []
+        seen_ids = set()
+
+        for offset in range(1, days_ahead + 1):
+            future_dt = current_date + timedelta(days=offset)
+            f_day = future_dt.day
+            _, last_day = calendar.monthrange(future_dt.year, future_dt.month)
+            is_last = (f_day == last_day)
+
+            async with self.get_connection() as conn:
+                if is_last:
+                    query = "SELECT * FROM recurring_bills WHERE day_of_month >= ? AND is_active = 1"
+                    params = (f_day,)
+                else:
+                    query = "SELECT * FROM recurring_bills WHERE day_of_month = ? AND is_active = 1"
+                    params = (f_day,)
+
+                async with conn.execute(query, params) as cur:
+                    rows = await cur.fetchall()
+                    for r in rows:
+                        b = dict(r)
+                        if b["id"] not in seen_ids:
+                            seen_ids.add(b["id"])
+                            b["due_in_days"] = offset
+                            b["due_date_str"] = future_dt.strftime("%Y-%m-%d")
+                            upcoming.append(b)
+
+        return sorted(upcoming, key=lambda x: x["due_in_days"])
+
+    async def get_weekly_review_data(self, start_date_str: str, end_date_str: str) -> Dict[str, Any]:
+        """Fetch weekly expenditure breakdown, task completion ratio, and budget health."""
+        expenses, total_spent, category_breakdown = await db.get_expenses_summary(start_date_str, end_date_str)
+        
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT COUNT(*) as completed_count FROM tasks
+                WHERE status = 'DONE' AND substr(completed_at, 1, 10) BETWEEN ? AND ?
+                """,
+                (start_date_str, end_date_str),
+            ) as cur:
+                row = await cur.fetchone()
+                completed_tasks_count = row["completed_count"] if row else 0
+
+        open_tasks = await self.get_open_tasks()
+        month_str = end_date_str[:7]
+        budget_status = await self.get_budget_status(month_str)
+
+        return {
+            "start_date": start_date_str,
+            "end_date": end_date_str,
+            "total_spent": total_spent,
+            "category_breakdown": category_breakdown,
+            "expenses_count": len(expenses),
+            "completed_tasks_count": completed_tasks_count,
+            "open_tasks_count": len(open_tasks),
+            "budget_status": budget_status,
+        }

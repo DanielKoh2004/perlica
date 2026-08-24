@@ -14,6 +14,7 @@ from src.extractor import (
 )
 from src.formatters import (
     render_progress_bar,
+    render_sparkline,
     format_action_preview,
     format_action_confirmation,
     format_morning_briefing,
@@ -148,3 +149,58 @@ async def test_multi_phase_hierarchy_completions(db: DatabaseManager):
 
     open_after_all_phases = await db.get_open_tasks()
     assert len(open_after_all_phases) == 0  # Parent automatically marked DONE
+
+
+@pytest.mark.asyncio
+async def test_productivity_streak_and_spending_pace(db: DatabaseManager):
+    """Test streak calculations and monospaced sparklines."""
+    # Day 1: 2026-08-23
+    await db.insert_expense(20.0, "Food & Dining", "Lunch", "2026-08-23 12:00:00")
+    # Day 2: 2026-08-24
+    await db.insert_expense(35.0, "Transport", "Grab", "2026-08-24 15:00:00")
+    # Day 3: 2026-08-25
+    await db.insert_expense(50.0, "Entertainment", "Movie", "2026-08-25 19:00:00")
+
+    streak = await db.get_productivity_streak("2026-08-25")
+    assert streak["streak_days"] == 3
+
+    pace = await db.get_spending_pace("2026-08-25")
+    assert pace["today_spend"] == 50.0
+    assert len(pace["daily_series"]) == 7
+
+    sparkline = render_sparkline(pace["daily_series"])
+    assert sparkline.startswith("`[") and sparkline.endswith("]`")
+
+
+@pytest.mark.asyncio
+async def test_upcoming_bills_3_day_warning(db: DatabaseManager):
+    """Test 3-day upcoming recurring bill detection."""
+    # Current date: 2026-08-25
+    # Bill due on 27th (in 2 days)
+    await db.add_recurring_bill("S&P 500", 100.0, "Investments & Savings", 27)
+    # Bill due on 28th (in 3 days)
+    await db.add_recurring_bill("Internet", 139.0, "Utilities & Bills", 28)
+    # Bill due on 1st (far away)
+    await db.add_recurring_bill("Rent", 1500.0, "Utilities & Bills", 1)
+
+    upcoming = await db.get_upcoming_recurring_bills(date(2026, 8, 25), days_ahead=3)
+    assert len(upcoming) == 2
+    assert upcoming[0]["name"] == "S&P 500"
+    assert upcoming[0]["due_in_days"] == 2
+    assert upcoming[1]["name"] == "Internet"
+    assert upcoming[1]["due_in_days"] == 3
+
+
+@pytest.mark.asyncio
+async def test_dropdown_menu_25_option_cap_safeguard():
+    """Verify TaskSelectMenu strictly caps to top 25 options when 30 tasks exist."""
+    from src.bot import TaskSelectMenu
+
+    tasks_30 = [
+        {"id": i, "description": f"Task #{i}", "priority": "HIGH" if i < 5 else "MEDIUM", "due_date": None}
+        for i in range(1, 31)
+    ]
+    menu = TaskSelectMenu(tasks_30)
+    assert len(menu.options) == 25
+    assert menu.max_values == 25
+

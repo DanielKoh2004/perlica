@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     TIMEZONE: str = Field(default="Asia/Kuala_Lumpur", description="IANA timezone name")
     DAILY_SUMMARY_TIME: str = Field(default="22:00", description="Daily summary dispatch time HH:MM")
     MORNING_BRIEFING_TIME: str = Field(default="08:30", description="Morning briefing dispatch time HH:MM")
+    WEEKLY_REVIEW_TIME: str = Field(default="20:00", description="Sunday weekly review dispatch time HH:MM")
 
     @field_validator("ALLOWED_USER_ID", "DISCORD_CHANNEL_ID", mode="before")
     @classmethod
@@ -61,6 +62,13 @@ class Settings(BaseSettings):
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             return int(parts[0]), int(parts[1])
         return 8, 30
+
+    @property
+    def weekly_review_hour_minute(self) -> tuple[int, int]:
+        parts = self.WEEKLY_REVIEW_TIME.split(":")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return int(parts[0]), int(parts[1])
+        return 20, 0
 
 
 settings = Settings()

@@ -18,6 +18,8 @@ from src.formatters import (
     format_budget_overview,
     format_query_results,
     format_help_guide,
+    format_weekly_executive_review,
+    format_task_selector_embed,
 )
 
 logging.basicConfig(
@@ -34,6 +36,8 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 db = DatabaseManager(settings.DATABASE_PATH)
 extractor = ExtractionEngine(settings.GROQ_API_KEY, settings.GROQ_MODEL)
 
+
+# --- INTERACTIVE DISCORD UI VIEWS ---
 
 class ActionIngestionView(discord.ui.View):
     """3-button interactive view: Confirm, Edit, or Reject new entries."""
@@ -110,11 +114,126 @@ class ConfirmActionView(discord.ui.View):
             )
 
 
+class TaskSelectMenu(discord.ui.Select):
+    """Native Discord Select Menu for 1-tap batch task completion (strictly capped to top 25)."""
+
+    def __init__(self, open_tasks: List[Dict[str, Any]]):
+        # Strict safeguard: Discord API hard-limits select menus to 25 options
+        capped_tasks = open_tasks[:25]
+        options = []
+        for t in capped_tasks:
+            due_str = f" | Due: {t['due_date']}" if t.get("due_date") else ""
+            desc_text = f"Priority: {t['priority']}{due_str}"
+            options.append(
+                discord.SelectOption(
+                    label=f"#{t['id']}: {t['description']}"[:100],
+                    value=str(t["id"]),
+                    description=desc_text[:100],
+                    emoji="🎯" if t.get("priority") == "HIGH" else "📌",
+                )
+            )
+
+        super().__init__(
+            placeholder="Select tasks to mark as DONE...",
+            min_values=1,
+            max_values=min(len(options), 25),
+            options=options,
+            custom_id="select_task_completion",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_ids = [int(v) for v in self.values]
+        now_local = datetime.datetime.now(settings.tz)
+        now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+
+        completed_tasks = await db.complete_tasks_by_ids(selected_ids, completed_at=now_str)
+        remaining_tasks = await db.get_open_tasks()
+
+        done_names = ", ".join([f"`#{t['id']}` {t['description']}" for t in completed_tasks])
+        msg_header = f"✅ **Completed {len(completed_tasks)} task(s):** {done_names}\n"
+
+        if remaining_tasks:
+            new_embed = format_task_selector_embed(remaining_tasks)
+            new_view = TaskMultiSelectView(remaining_tasks)
+            await interaction.response.edit_message(content=msg_header, embed=new_embed, view=new_view)
+        else:
+            done_embed = discord.Embed(
+                title="🎉 All Tasks Completed!",
+                description="You have completed all pending tasks. Outstanding work!",
+                color=discord.Color.green(),
+            )
+            await interaction.response.edit_message(content=msg_header, embed=done_embed, view=None)
+
+
+class TaskMultiSelectView(discord.ui.View):
+    """View container for task completion dropdown."""
+
+    def __init__(self, open_tasks: List[Dict[str, Any]], timeout: float = 300.0):
+        super().__init__(timeout=timeout)
+        if open_tasks:
+            self.add_item(TaskSelectMenu(open_tasks))
+
+
+class QuickActionView(discord.ui.View):
+    """Persistent 4-button quick action bar attached to briefings, summaries, and help guides."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Budget Health", style=discord.ButtonStyle.primary, emoji="📊", custom_id="perlica:btn:budgets")
+    async def budget_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        status = await db.get_budget_status(month_str)
+        embed = format_budget_overview(status)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Open Tasks", style=discord.ButtonStyle.primary, emoji="📋", custom_id="perlica:btn:tasks")
+    async def tasks_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        open_tasks = await db.get_open_tasks()
+        embed = format_task_selector_embed(open_tasks)
+        view = TaskMultiSelectView(open_tasks) if open_tasks else None
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="Export CSV", style=discord.ButtonStyle.secondary, emoji="📄", custom_id="perlica:btn:csv")
+    async def csv_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        start_month = now_local.strftime("%Y-%m-01")
+        csv_text = await db.generate_csv_data(start_month)
+        csv_file = discord.File(
+            io.BytesIO(csv_text.encode("utf-8")),
+            filename=f"Perlica_Expenses_{month_str}.csv",
+        )
+        await interaction.response.send_message(
+            content=f"📄 **Expense export for {now_local.strftime('%B %Y')}:**",
+            file=csv_file,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="AI Advice", style=discord.ButtonStyle.success, emoji="💡", custom_id="perlica:btn:advice")
+    async def advice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        now_local = datetime.datetime.now(settings.tz)
+        snapshot = await db.get_full_snapshot()
+        advice = await extractor.generate_ai_insight(
+            prompt_topic="Provide a proactive financial and productivity insight based on my current data.",
+            snapshot_data=snapshot,
+            now_local=now_local,
+        )
+        await interaction.followup.send(content=f"💡 **AI Financial & Focus Insight:**\n{advice}", ephemeral=True)
+
+
+# --- BOT LIFECYCLE & BACKGROUND SCHEDULED LOOPS ---
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     await db.init_db()
     logger.info("Database schema initialized successfully.")
+
+    # Register persistent view for restart resilience
+    bot.add_view(QuickActionView())
 
     if not daily_summary_loop.is_running():
         daily_summary_loop.start()
@@ -128,12 +247,21 @@ async def on_ready():
             f"Morning briefing loop scheduled at {settings.MORNING_BRIEFING_TIME} ({settings.TIMEZONE})."
         )
 
+    if not weekly_review_loop.is_running():
+        weekly_review_loop.start()
+        logger.info(
+            f"Weekly executive review loop scheduled on Sundays at {settings.WEEKLY_REVIEW_TIME} ({settings.TIMEZONE})."
+        )
+
 
 summary_h, summary_m = settings.summary_hour_minute
 summary_time = datetime.time(hour=summary_h, minute=summary_m, tzinfo=settings.tz)
 
 morning_h, morning_m = settings.morning_hour_minute
 morning_time = datetime.time(hour=morning_h, minute=morning_m, tzinfo=settings.tz)
+
+weekly_h, weekly_m = settings.weekly_review_hour_minute
+weekly_time = datetime.time(hour=weekly_h, minute=weekly_m, tzinfo=settings.tz)
 
 
 @tasks.loop(time=morning_time)
@@ -149,15 +277,21 @@ async def morning_briefing_loop():
     now_local = datetime.datetime.now(settings.tz)
     today_str = now_local.strftime("%Y-%m-%d")
     month_str = now_local.strftime("%Y-%m")
-    day_of_month = now_local.day
 
     open_tasks = await db.get_open_tasks()
     due_bills = await db.get_due_recurring_bills(now_local.date())
+    upcoming_bills = await db.get_upcoming_recurring_bills(now_local.date(), days_ahead=3)
     budget_status = await db.get_budget_status(month_str)
 
-    embed = format_morning_briefing(open_tasks, due_bills, budget_status, today_str)
+    embed = format_morning_briefing(
+        open_tasks=open_tasks,
+        due_bills=due_bills,
+        budget_status=budget_status,
+        date_str=today_str,
+        upcoming_bills=upcoming_bills,
+    )
     try:
-        await target_user.send(embed=embed)
+        await target_user.send(embed=embed, view=QuickActionView())
         logger.info(f"Dispatched morning briefing DM for {today_str}.")
     except Exception as e:
         logger.error(f"Failed to send morning briefing DM: {e}")
@@ -174,20 +308,66 @@ async def daily_summary_loop():
     today_str = now_local.strftime("%Y-%m-%d")
 
     expenses, total_spent, open_tasks = await db.get_daily_summary(today_str)
-    embed = format_daily_summary(expenses, total_spent, open_tasks, today_str)
+    spending_pace = await db.get_spending_pace(today_str)
+    streak_info = await db.get_productivity_streak(today_str)
+
+    embed = format_daily_summary(
+        expenses=expenses,
+        total_spent=total_spent,
+        open_tasks=open_tasks,
+        date_str=today_str,
+        spending_pace=spending_pace,
+        streak_info=streak_info,
+    )
 
     try:
         if target_user:
-            await target_user.send(embed=embed)
+            await target_user.send(embed=embed, view=QuickActionView())
             logger.info(f"Dispatched daily summary DM to user {target_user.name} for {today_str}.")
         elif settings.DISCORD_CHANNEL_ID:
             channel = bot.get_channel(settings.DISCORD_CHANNEL_ID) or await bot.fetch_channel(settings.DISCORD_CHANNEL_ID)
             if channel:
-                await channel.send(embed=embed)
+                await channel.send(embed=embed, view=QuickActionView())
                 logger.info(f"Dispatched daily summary to channel for {today_str}.")
     except Exception as e:
         logger.error(f"Failed to send daily summary embed: {e}")
 
+
+@tasks.loop(time=weekly_time)
+async def weekly_review_loop():
+    """Background scheduled job dispatching Sunday 8:00 PM Weekly Executive Review."""
+    now_local = datetime.datetime.now(settings.tz)
+    # Check if today is Sunday (weekday == 6 in Python datetime)
+    if now_local.weekday() != 6:
+        return
+
+    target_user = None
+    if settings.ALLOWED_USER_ID:
+        target_user = bot.get_user(settings.ALLOWED_USER_ID) or await bot.fetch_user(settings.ALLOWED_USER_ID)
+
+    if not target_user:
+        return
+
+    today_date = now_local.date()
+    start_of_week = (today_date - timedelta(days=6)).strftime("%Y-%m-%d")
+    end_of_week = today_date.strftime("%Y-%m-%d")
+
+    review_data = await db.get_weekly_review_data(start_of_week, end_of_week)
+    ai_kickoff = await extractor.generate_ai_insight(
+        prompt_topic="Sunday Weekly Executive Review. Analyze the week's accomplishments and provide a high-impact strategic kickoff for Monday.",
+        snapshot_data=await db.get_full_snapshot(start_of_week, end_of_week),
+        now_local=now_local,
+    )
+
+    embed = format_weekly_executive_review(review_data, ai_strategic_kickoff=ai_kickoff)
+    try:
+        await target_user.send(embed=embed, view=QuickActionView())
+        logger.info(f"Dispatched Sunday Weekly Review DM for {start_of_week} to {end_of_week}.")
+    except Exception as e:
+        logger.error(f"Failed to send weekly review DM: {e}")
+
+
+# --- MESSAGE DISPATCHER & INGESTION ---
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -204,11 +384,13 @@ async def on_message(message: discord.Message):
         return
 
     content = message.content.strip()
+    image_attachment = None
 
-    # 1. Voice Note / Audio Transcription (Groq Whisper)
+    # Check attachments for voice notes or receipt photos
     if message.attachments:
         for att in message.attachments:
-            if any(att.filename.lower().endswith(ext) for ext in [".ogg", ".mp3", ".m4a", ".wav", ".webm"]):
+            lower_name = att.filename.lower()
+            if any(lower_name.endswith(ext) for ext in [".ogg", ".mp3", ".m4a", ".wav", ".webm"]):
                 async with message.channel.typing():
                     audio_bytes = await att.read()
                     transcribed = await extractor.transcribe_audio((att.filename, audio_bytes))
@@ -217,13 +399,15 @@ async def on_message(message: discord.Message):
                         content = f"{content} {transcribed}".strip()
                     else:
                         await message.reply("⚠️ Could not transcribe the audio file.")
+            elif any(lower_name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
+                image_attachment = att
 
-    if not content:
+    if not content and not image_attachment:
         return
 
     # Direct Help Command Check
     if content.lower() in ("!help", "help", "guide", "how to use", "/help", "commands"):
-        await message.reply(embed=format_help_guide())
+        await message.reply(embed=format_help_guide(), view=QuickActionView())
         return
 
     # Visual feedback: typing indicator in DM
@@ -234,13 +418,24 @@ async def on_message(message: discord.Message):
         open_tasks = await db.get_open_tasks()
         recurring_bills = await db.list_recurring_bills()
 
-        # Extract structured payload via LLM layer with live tasks and bills
-        payload: ExtractedPayload = await extractor.extract_information(
-            text=content,
-            now_local=now_local,
-            open_tasks=open_tasks,
-            recurring_bills=recurring_bills,
-        )
+        # Receipt Image OCR extraction
+        if image_attachment and not content:
+            img_bytes = await image_attachment.read()
+            payload: ExtractedPayload = await extractor.extract_from_image(
+                image_bytes=img_bytes,
+                filename=image_attachment.filename,
+                now_local=now_local,
+                open_tasks=open_tasks,
+                recurring_bills=recurring_bills,
+            )
+        else:
+            # Extract structured payload via LLM layer with live tasks and bills
+            payload: ExtractedPayload = await extractor.extract_information(
+                text=content,
+                now_local=now_local,
+                open_tasks=open_tasks,
+                recurring_bills=recurring_bills,
+            )
 
         # 0. Zero-Assumption Clarification Prompt
         if payload.needs_clarification and payload.clarification_prompt:
@@ -517,17 +712,17 @@ async def on_message(message: discord.Message):
                 payload.conversational_reply
                 or "Got it! Let me know if you'd like to log an expense, add a task, or see a summary."
             )
-            await message.reply(reply_text)
+            await message.reply(reply_text, view=QuickActionView())
             return
 
-        # 7. Query / Immediate Summary / Budget Overview / Advice Handling
+        # 7. Query / Immediate Summary / Budget Overview / Tasks Handling
         if payload.query:
             q = payload.query
             today_date = now_local.date()
 
             if q.query_target == "BUDGETS":
                 status = await db.get_budget_status(month_str)
-                await message.reply(embed=format_budget_overview(status))
+                await message.reply(embed=format_budget_overview(status), view=QuickActionView())
                 return
 
             if q.query_target == "BILLS":
@@ -537,7 +732,15 @@ async def on_message(message: discord.Message):
                     embed = discord.Embed(title="🔔 Configured Recurring Bills", description="\n".join(b_lines), color=discord.Color.purple())
                 else:
                     embed = discord.Embed(title="🔔 Configured Recurring Bills", description="No recurring bills configured yet. Add one with *'Add recurring bill: Netflix RM 55 on the 15th'*.", color=discord.Color.purple())
-                await message.reply(embed=embed)
+                await message.reply(embed=embed, view=QuickActionView())
+                return
+
+            # Interactive Task Multi-Select Dropdown for open tasks
+            if q.query_target == "TASKS":
+                tasks_list = await db.get_open_tasks()
+                embed = format_task_selector_embed(tasks_list)
+                view = TaskMultiSelectView(tasks_list) if tasks_list else None
+                await message.reply(embed=embed, view=view)
                 return
 
             if q.timeframe == "TODAY":
@@ -571,7 +774,7 @@ async def on_message(message: discord.Message):
                     now_local=now_local,
                 )
                 embed = format_full_snapshot_summary(snapshot, title_time, ai_digest, budget_status)
-                await message.reply(embed=embed)
+                await message.reply(embed=embed, view=QuickActionView())
                 return
 
             # Specific Advice or General Question
@@ -582,10 +785,10 @@ async def on_message(message: discord.Message):
                     snapshot_data=snapshot,
                     now_local=now_local,
                 )
-                await message.reply(ai_answer)
+                await message.reply(ai_answer, view=QuickActionView())
                 return
 
-            # Targeted Expenses or Tasks Status
+            # Targeted Expenses Status
             expenses, total, breakdown = await db.get_expenses_summary(start_d, end_d)
             tasks_list = await db.get_open_tasks()
 
@@ -596,7 +799,7 @@ async def on_message(message: discord.Message):
                 category_breakdown=breakdown,
                 tasks=tasks_list,
             )
-            await message.reply(embed=embed)
+            await message.reply(embed=embed, view=QuickActionView())
             return
 
         # 8. Action Ingestion with 3-Button Confirmation Preview ([Confirm] [Edit] [Reject])
@@ -714,15 +917,18 @@ async def on_message(message: discord.Message):
                     elif b["is_warning"]:
                         budget_alerts.append(f"⚠️ **{b['category']}** is at {b['percentage']}% of monthly limit (RM {b['remaining']:.2f} left).")
 
+            streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
+
             confirmed_embed = format_action_confirmation(
                 payload=payload,
                 inserted_expenses=inserted_expenses,
                 inserted_tasks=inserted_tasks,
                 completed_tasks=completed_tasks_details,
                 budget_alerts=budget_alerts,
+                streak_info=streak_info,
             )
             await interaction.response.edit_message(
-                embed=confirmed_embed, view=None
+                embed=confirmed_embed, view=QuickActionView()
             )
 
         # Callback for [Edit]
