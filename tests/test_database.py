@@ -82,7 +82,6 @@ async def test_multi_phase_tasks(db: DatabaseManager):
     assert subtasks[0]["phase_name"] == "Phase 1"
 
     open_tasks = await db.get_open_tasks()
-    # 1 parent + 3 subtasks
     assert len(open_tasks) == 4
 
     # Complete Phase 1
@@ -90,7 +89,6 @@ async def test_multi_phase_tasks(db: DatabaseManager):
     res1 = await db.complete_task_by_id(phase1_id, "2026-08-25 10:00:00")
     assert res1["status"] == "DONE"
 
-    # 1 parent + 2 subtasks remaining
     open_tasks_after = await db.get_open_tasks()
     assert len(open_tasks_after) == 3
 
@@ -98,6 +96,32 @@ async def test_multi_phase_tasks(db: DatabaseManager):
     await db.complete_task_by_id(parent_id, "2026-08-26 10:00:00")
     remaining = await db.get_open_tasks()
     assert len(remaining) == 0
+
+
+@pytest.mark.asyncio
+async def test_update_and_delete_operations(db: DatabaseManager):
+    # Expense CRUD
+    eid = await db.insert_expense(25.00, "Food & Dining", "Old note", "2026-08-24 12:00:00")
+    updated_exp = await db.update_expense(eid, amount=30.00, note="New note")
+    assert updated_exp["amount"] == 30.00
+    assert updated_exp["note"] == "New note"
+
+    last_exp = await db.get_last_expense()
+    assert last_exp["id"] == eid
+
+    deleted_exp = await db.delete_expense(eid)
+    assert deleted_exp["id"] == eid
+    assert await db.get_expense_by_id(eid) is None
+
+    # Task CRUD
+    tid = await db.insert_task("Original task", "LOW", created_at="2026-08-24 12:00:00")
+    updated_task = await db.update_task(tid, description="Updated task", priority="HIGH")
+    assert updated_task["description"] == "Updated task"
+    assert updated_task["priority"] == "HIGH"
+
+    deleted_task = await db.delete_task(tid)
+    assert deleted_task["id"] == tid
+    assert await db.get_task_by_id(tid) is None
 
 
 @pytest.mark.asyncio

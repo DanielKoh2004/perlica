@@ -1,6 +1,6 @@
 import logging
 import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from datetime import timedelta
 import discord
 from discord.ext import commands, tasks
@@ -29,6 +29,41 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 db = DatabaseManager(settings.DATABASE_PATH)
 extractor = ExtractionEngine(settings.GROQ_API_KEY, settings.GROQ_MODEL)
+
+
+class ConfirmActionView(discord.ui.View):
+    """Interactive Discord confirmation buttons for destructive or modifying actions."""
+
+    def __init__(
+        self,
+        on_confirm: Callable[[discord.Interaction], Any],
+        on_cancel: Optional[Callable[[discord.Interaction], Any]] = None,
+        timeout: float = 60.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.on_confirm = on_confirm
+        self.on_cancel = on_cancel
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅")
+    async def confirm_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        for child in self.children:
+            child.disabled = True
+        await self.on_confirm(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="❌")
+    async def cancel_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        for child in self.children:
+            child.disabled = True
+        if self.on_cancel:
+            await self.on_cancel(interaction)
+        else:
+            await interaction.response.edit_message(
+                content="❌ Action cancelled.", embed=None, view=None
+            )
 
 
 @bot.event
@@ -125,7 +160,191 @@ async def on_message(message: discord.Message):
             await message.reply(payload.clarification_prompt)
             return
 
-        # 1. Pure Conversational / Casual Chat Handling
+        # 1. UNDO Action with Button Confirmation
+        if payload.undo_intent:
+            intent = payload.undo_intent
+            last_exp = await db.get_last_expense()
+            last_task = await db.get_last_task()
+
+            # Determine what to undo
+            target_type = None
+            target_item = None
+            if intent in ("EXPENSE", "LAST") and last_exp:
+                target_type = "expense"
+                target_item = last_exp
+            elif intent in ("TASK", "LAST") and last_task:
+                target_type = "task"
+                target_item = last_task
+
+            if not target_item:
+                await message.reply("There is nothing recent to undo.")
+                return
+
+            if target_type == "expense":
+                item_desc = f"Expense **#{target_item['id']}** — RM {target_item['amount']:.2f} (`{target_item['category']}`: {target_item.get('note') or 'No note'})"
+                async def do_undo(interaction: discord.Interaction):
+                    deleted = await db.delete_expense(target_item["id"])
+                    await interaction.response.edit_message(
+                        content=f"🗑️ **Undid:** Deleted Expense #{deleted['id']} (RM {deleted['amount']:.2f} {deleted['category']}).",
+                        embed=None,
+                        view=None,
+                    )
+            else:
+                item_desc = f"Task **#{target_item['id']}** — `[{target_item['priority']}]` {target_item['description']}"
+                async def do_undo(interaction: discord.Interaction):
+                    deleted = await db.delete_task(target_item["id"])
+                    await interaction.response.edit_message(
+                        content=f"🗑️ **Undid:** Deleted Task #{deleted['id']} ({deleted['description']}).",
+                        embed=None,
+                        view=None,
+                    )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Undo Action",
+                description=f"Are you sure you want to delete and undo this recent entry?\n\n{item_desc}",
+                color=discord.Color.orange(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_undo))
+            return
+
+        # 2. DELETE Specific Expense / Task with Button Confirmation
+        if payload.delete_expense_id:
+            eid = payload.delete_expense_id
+            target_exp = await db.get_expense_by_id(eid)
+            if not target_exp:
+                await message.reply(f"Expense #{eid} was not found.")
+                return
+
+            async def do_delete_exp(interaction: discord.Interaction):
+                await db.delete_expense(eid)
+                await interaction.response.edit_message(
+                    content=f"🗑️ **Deleted Expense #{eid}:** RM {target_exp['amount']:.2f} (`{target_exp['category']}`).",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Deletion",
+                description=f"Are you sure you want to delete **Expense #{eid}** (RM {target_exp['amount']:.2f} — `{target_exp['category']}`)?",
+                color=discord.Color.red(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_exp))
+            return
+
+        if payload.delete_task_id:
+            tid = payload.delete_task_id
+            target_task = await db.get_task_by_id(tid)
+            if not target_task:
+                await message.reply(f"Task #{tid} was not found.")
+                return
+
+            async def do_delete_task(interaction: discord.Interaction):
+                await db.delete_task(tid)
+                await interaction.response.edit_message(
+                    content=f"🗑️ **Deleted Task #{tid}:** {target_task['description']}.",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Deletion",
+                description=f"Are you sure you want to delete **Task #{tid}** (`[{target_task['priority']}]` {target_task['description']})?",
+                color=discord.Color.red(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_delete_task))
+            return
+
+        # 3. EDIT Expense / Task with Button Confirmation
+        if payload.edit_expense_id:
+            eid = payload.edit_expense_id
+            target_exp = await db.get_expense_by_id(eid)
+            if not target_exp:
+                await message.reply(f"Expense #{eid} was not found.")
+                return
+
+            new_amt = payload.edit_expense_amount if payload.edit_expense_amount is not None else target_exp["amount"]
+            new_cat = payload.edit_expense_category.value if payload.edit_expense_category else target_exp["category"]
+            new_note = payload.edit_expense_note if payload.edit_expense_note is not None else target_exp["note"]
+
+            async def do_edit_exp(interaction: discord.Interaction):
+                updated = await db.update_expense(eid, new_amt, new_cat, new_note)
+                await interaction.response.edit_message(
+                    content=f"✏️ **Updated Expense #{eid}:** RM {updated['amount']:.2f} (`{updated['category']}`: {updated.get('note') or 'No note'}).",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Expense Update",
+                description=(
+                    f"**Expense #{eid} Changes:**\n"
+                    f"• Amount: RM {target_exp['amount']:.2f} ➔ **RM {new_amt:.2f}**\n"
+                    f"• Category: `{target_exp['category']}` ➔ **`{new_cat}`**\n"
+                    f"• Note: {target_exp.get('note') or 'None'} ➔ **{new_note or 'None'}**"
+                ),
+                color=discord.Color.gold(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_edit_exp))
+            return
+
+        if payload.edit_task_id:
+            tid = payload.edit_task_id
+            target_task = await db.get_task_by_id(tid)
+            if not target_task:
+                await message.reply(f"Task #{tid} was not found.")
+                return
+
+            new_desc = payload.edit_task_description or target_task["description"]
+            new_prio = payload.edit_task_priority.value if payload.edit_task_priority else target_task["priority"]
+            new_due = payload.edit_task_due_date if payload.edit_task_due_date is not None else target_task["due_date"]
+            new_time = payload.edit_task_due_time if payload.edit_task_due_time is not None else target_task["due_time"]
+
+            async def do_edit_task(interaction: discord.Interaction):
+                updated = await db.update_task(tid, new_desc, new_prio, new_due, new_time)
+                await interaction.response.edit_message(
+                    content=f"✏️ **Updated Task #{tid}:** `[{updated['priority']}]` {updated['description']} (Due: {updated.get('due_date') or 'None'}).",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Task Update",
+                description=(
+                    f"**Task #{tid} Changes:**\n"
+                    f"• Description: {target_task['description']} ➔ **{new_desc}**\n"
+                    f"• Priority: `{target_task['priority']}` ➔ **`{new_prio}`**\n"
+                    f"• Due Date: {target_task.get('due_date') or 'None'} ➔ **{new_due or 'None'}**"
+                ),
+                color=discord.Color.gold(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_edit_task))
+            return
+
+        # 4. REOPEN Task with Button Confirmation
+        if payload.reopen_task_id:
+            tid = payload.reopen_task_id
+            target_task = await db.get_task_by_id(tid)
+            if not target_task:
+                await message.reply(f"Task #{tid} was not found.")
+                return
+
+            async def do_reopen(interaction: discord.Interaction):
+                await db.update_task(tid, status="OPEN")
+                await interaction.response.edit_message(
+                    content=f"🔄 **Reopened Task #{tid}:** {target_task['description']} is now `OPEN`.",
+                    embed=None,
+                    view=None,
+                )
+
+            embed = discord.Embed(
+                title="⚠️ Confirm Reopen Task",
+                description=f"Are you sure you want to reopen **Task #{tid}** ({target_task['description']}) back to `OPEN`?",
+                color=discord.Color.blue(),
+            )
+            await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_reopen))
+            return
+
+        # 5. Pure Conversational / Casual Chat Handling
         has_actions = bool(
             payload.expenses
             or payload.new_tasks
@@ -142,7 +361,7 @@ async def on_message(message: discord.Message):
             await message.reply(reply_text)
             return
 
-        # 2. Query / Immediate Summary / Advice Handling
+        # 6. Query / Immediate Summary / Advice Handling
         if payload.query:
             q = payload.query
             today_date = now_local.date()
@@ -205,7 +424,7 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed)
             return
 
-        # 3. Action Ingestion (Expenses, Single/Multi-Phase Tasks, Completions)
+        # 7. Action Ingestion (Expenses, Single/Multi-Phase Tasks, Completions)
         inserted_expenses: List[Dict[str, Any]] = []
         for exp in payload.expenses:
             created_at = (

@@ -108,6 +108,59 @@ class ExtractedPayload(BaseModel):
         default_factory=list,
         description="Exact integer IDs of open tasks or sub-phases from the provided context that the user completed. Leave empty list if none.",
     )
+    # Undo / Delete / Edit Actions
+    undo_intent: Optional[Literal["EXPENSE", "TASK", "LAST", "NONE"]] = Field(
+        default=None,
+        description="Populate if user asks to undo the last action (e.g. 'undo', 'cancel last entry', 'undo last expense').",
+    )
+    delete_expense_id: Optional[int] = Field(
+        default=None,
+        description="ID of specific expense to delete (e.g. 'delete expense #3').",
+    )
+    delete_task_id: Optional[int] = Field(
+        default=None,
+        description="ID of specific task to delete (e.g. 'delete task #5').",
+    )
+    edit_expense_id: Optional[int] = Field(
+        default=None,
+        description="ID of expense being modified.",
+    )
+    edit_expense_amount: Optional[float] = Field(
+        default=None,
+        description="New amount for the expense.",
+    )
+    edit_expense_category: Optional[ExpenseCategory] = Field(
+        default=None,
+        description="New category for the expense.",
+    )
+    edit_expense_note: Optional[str] = Field(
+        default=None,
+        description="New note/description for the expense.",
+    )
+    edit_task_id: Optional[int] = Field(
+        default=None,
+        description="ID of task being modified.",
+    )
+    edit_task_description: Optional[str] = Field(
+        default=None,
+        description="New description for the task.",
+    )
+    edit_task_priority: Optional[TaskPriority] = Field(
+        default=None,
+        description="New priority for the task.",
+    )
+    edit_task_due_date: Optional[str] = Field(
+        default=None,
+        description="New due date in YYYY-MM-DD.",
+    )
+    edit_task_due_time: Optional[str] = Field(
+        default=None,
+        description="New due time in HH:MM.",
+    )
+    reopen_task_id: Optional[int] = Field(
+        default=None,
+        description="ID of task to reopen from DONE back to OPEN (e.g. 'reopen task #2').",
+    )
     needs_clarification: bool = Field(
         default=False,
         description="Set to true if user input was underspecified or ambiguous (e.g. logged amount without item/category) to avoid making assumptions.",
@@ -145,7 +198,7 @@ def build_system_prompt(now_local: datetime, open_tasks: List[Dict[str, Any]]) -
     else:
         tasks_formatted = "No active open tasks."
 
-    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, and giving smart advice.
+    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, edits/undo, and giving smart advice.
 
 LOCAL TIME REFERENCE:
 - Current Local Timestamp: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
@@ -161,16 +214,24 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - If the user provides an expense amount without ANY item or category context (e.g. "Spent RM 50", "Paid 30", "RM 100 spent"), DO NOT guess or assume it's food. Set needs_clarification=True, clarification_prompt="What did you spend the RM 50 on? (e.g. Food & Dining, Groceries, Transport, Shopping, Utilities)?", and leave expenses=[].
    - If the user provides clear context (e.g. "RM 15 chicken rice lunch" or "Grab RM 25"), log it immediately without asking.
 
-2. MULTI-PHASE TASKS:
+2. UNDO, DELETE, EDIT & REOPEN:
+   - If user says "undo", "cancel that", "undo last": set undo_intent="LAST" (or "EXPENSE"/"TASK").
+   - If user says "delete expense #3": set delete_expense_id=3.
+   - If user says "delete task #5": set delete_task_id=5.
+   - If user says "change expense #2 amount to 25": set edit_expense_id=2, edit_expense_amount=25.0.
+   - If user says "update task #4 due date to tomorrow": set edit_task_id=4, edit_task_due_date calculated from tomorrow.
+   - If user says "reopen task #1" or "mark task #1 open": set reopen_task_id=1.
+
+3. MULTI-PHASE TASKS:
    - If the user specifies sub-steps or phases (e.g. "Create task 'Website launch' with 3 phases: 1. Wireframes, 2. Frontend, 3. Testing"), populate TaskItem with description="Website launch" and phases=["Wireframes", "Frontend", "Testing"].
 
-3. ON-DEMAND SUMMARIES & RECAPS:
+4. ON-DEMAND SUMMARIES & RECAPS:
    - If the user asks for a summary (e.g. 'summarize today', 'recap my day', 'how did I do today?', 'summary of this week'), populate query with query_target='SUMMARY' and appropriate timeframe.
 
-4. TASK COMPLETIONS:
+5. TASK COMPLETIONS:
    - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID. If ambiguous, explain in ambiguous_task_note with conflicting task IDs.
 
-5. CASUAL CONVERSATION:
+6. CASUAL CONVERSATION:
    - For greetings, check-ins, or questions without data logging (e.g. 'I just woke up', 'hello', 'how can you help me?'), provide a warm, concise conversational_reply.
 """
 

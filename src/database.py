@@ -159,6 +159,108 @@ class DatabaseManager:
 
         return parent_id, subtasks
 
+    async def get_expense_by_id(self, expense_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific expense by ID."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM expenses WHERE id = ?", (expense_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_task_by_id(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific task by ID."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_last_expense(self) -> Optional[Dict[str, Any]]:
+        """Fetch the most recently created expense."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM expenses ORDER BY id DESC LIMIT 1") as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_last_task(self) -> Optional[Dict[str, Any]]:
+        """Fetch the most recently created task."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 1") as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def delete_expense(self, expense_id: int) -> Optional[Dict[str, Any]]:
+        """Delete an expense by ID and return its data."""
+        exp = await self.get_expense_by_id(expense_id)
+        if not exp:
+            return None
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+            await conn.commit()
+        return exp
+
+    async def delete_task(self, task_id: int) -> Optional[Dict[str, Any]]:
+        """Delete a task (and all its subphases if parent) by ID."""
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return None
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM tasks WHERE id = ? OR parent_id = ?", (task_id, task_id))
+            await conn.commit()
+        return task
+
+    async def update_expense(
+        self,
+        expense_id: int,
+        amount: Optional[float] = None,
+        category: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing expense."""
+        exp = await self.get_expense_by_id(expense_id)
+        if not exp:
+            return None
+        new_amount = round(amount, 2) if amount is not None else exp["amount"]
+        new_cat = category or exp["category"]
+        new_note = note if note is not None else exp["note"]
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                "UPDATE expenses SET amount = ?, category = ?, note = ? WHERE id = ?",
+                (new_amount, new_cat, new_note, expense_id),
+            )
+            await conn.commit()
+        return await self.get_expense_by_id(expense_id)
+
+    async def update_task(
+        self,
+        task_id: int,
+        description: Optional[str] = None,
+        priority: Optional[str] = None,
+        due_date: Optional[str] = None,
+        due_time: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing task."""
+        t = await self.get_task_by_id(task_id)
+        if not t:
+            return None
+        new_desc = description or t["description"]
+        new_prio = priority.upper() if priority and priority.upper() in ("LOW", "MEDIUM", "HIGH") else t["priority"]
+        new_due_date = due_date if due_date is not None else t["due_date"]
+        new_due_time = due_time if due_time is not None else t["due_time"]
+        new_status = status if status in ("OPEN", "DONE") else t["status"]
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE tasks 
+                SET description = ?, priority = ?, due_date = ?, due_time = ?, status = ?
+                WHERE id = ?
+                """,
+                (new_desc, new_prio, new_due_date, new_due_time, new_status, task_id),
+            )
+            await conn.commit()
+        return await self.get_task_by_id(task_id)
+
     async def complete_task_by_id(
         self, task_id: int, completed_at: str
     ) -> Optional[Dict[str, Any]]:
