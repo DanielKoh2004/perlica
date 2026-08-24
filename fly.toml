@@ -1,0 +1,21 @@
+# fly.toml - Configuration for Discord Personal Task & Expense Agent
+app = "perlica-discord-agent"
+primary_region = "sin"
+
+[build]
+
+[env]
+  DATABASE_PATH = "/data/tracker.db"
+  TIMEZONE = "Asia/Kuala_Lumpur"
+  DAILY_SUMMARY_TIME = "22:00"
+  GROQ_MODEL = "llama-3.3-70b-versatile"
+
+[mounts]
+  source = "tracker_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
