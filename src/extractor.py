@@ -409,7 +409,7 @@ class ExtractionEngine:
         client = self._get_client()
         system_prompt = build_system_prompt(now_local, open_tasks, recurring_bills)
 
-        models_to_try = [self.model] + [m for m in GROQ_MODEL_CANDIDATES if m != self.model]
+        models_to_try = list(GROQ_MODEL_CANDIDATES)
 
         last_error = None
         for candidate_model in models_to_try:
@@ -424,7 +424,6 @@ class ExtractionEngine:
                     temperature=0.1,
                     max_retries=1,
                 )
-                self.model = candidate_model
                 return payload
             except ValidationError as ve:
                 logger.error(f"Pydantic Validation Error in LLM output ({candidate_model}): {ve}")
@@ -470,7 +469,7 @@ Tasks Completed: {completed_tasks_str}
 Active Open Tasks: {open_tasks_str}
 """
 
-        models_to_try = [self.model] + [m for m in GROQ_MODEL_CANDIDATES if m != self.model]
+        models_to_try = list(GROQ_MODEL_CANDIDATES)
         for candidate in models_to_try:
             try:
                 response = await groq_client.chat.completions.create(
