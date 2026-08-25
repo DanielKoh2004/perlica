@@ -3093,18 +3093,22 @@ async def on_message(message: discord.Message):
 
         async with message.channel.typing():
             from src.goal_wizard import process_wizard_turn
-            state, reply_text = await process_wizard_turn(
-                user_id=message.author.id,
-                user_message=content,
-                db_manager=db,
-                groq_api_key=settings.GROQ_API_KEY,
-            )
-            if state.is_ready_for_review:
-                embed = format_goal_wizard_preview_embed(state.to_dict())
-                view = GoalWizardReviewView(user_id=message.author.id, state_dict=state.to_dict(), db_manager=db)
-                await message.reply(embed=embed, view=view)
-            else:
-                await message.reply(reply_text)
+            try:
+                state, reply_text = await process_wizard_turn(
+                    user_id=message.author.id,
+                    user_message=content,
+                    db_manager=db,
+                    groq_api_key=settings.GROQ_API_KEY,
+                )
+                if state.is_ready_for_review:
+                    embed = format_goal_wizard_preview_embed(state.to_dict())
+                    view = GoalWizardReviewView(user_id=message.author.id, state_dict=state.to_dict(), db_manager=db)
+                    await message.reply(embed=embed, view=view)
+                else:
+                    await message.reply(reply_text)
+            except Exception as e:
+                logger.error(f"Goal wizard turn error: {e}")
+                await message.reply("⚠️ Goal planning assistant is momentarily processing. Please try your response again, or type `cancel` to exit.")
         return
 
     # Direct Ingest Hub Command Check
@@ -3627,18 +3631,22 @@ async def on_message(message: discord.Message):
         if payload.goal_create_name and not payload.goal_create_target:
             async with message.channel.typing():
                 from src.goal_wizard import process_wizard_turn
-                state, reply_text = await process_wizard_turn(
-                    user_id=message.author.id,
-                    user_message=content,
-                    db_manager=db,
-                    groq_api_key=settings.GROQ_API_KEY,
-                )
-                if state.is_ready_for_review:
-                    embed = format_goal_wizard_preview_embed(state.to_dict())
-                    view = GoalWizardReviewView(user_id=message.author.id, state_dict=state.to_dict(), db_manager=db)
-                    await message.reply(embed=embed, view=view)
-                else:
-                    await message.reply(reply_text)
+                try:
+                    state, reply_text = await process_wizard_turn(
+                        user_id=message.author.id,
+                        user_message=content,
+                        db_manager=db,
+                        groq_api_key=settings.GROQ_API_KEY,
+                    )
+                    if state.is_ready_for_review:
+                        embed = format_goal_wizard_preview_embed(state.to_dict())
+                        view = GoalWizardReviewView(user_id=message.author.id, state_dict=state.to_dict(), db_manager=db)
+                        await message.reply(embed=embed, view=view)
+                    else:
+                        await message.reply(reply_text)
+                except Exception as e:
+                    logger.error(f"Initial goal wizard launch error: {e}")
+                    await message.reply("⚠️ Goal planning assistant is momentarily processing. Please try your message again.")
             return
 
         # 6. Pure Conversational / Casual Chat Handling

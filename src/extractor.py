@@ -18,7 +18,9 @@ GROQ_MODEL_CANDIDATES = [
     "qwen/qwen3.6-27b",
     "groq/compound-mini",
     "allam-2-7b",
-    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
 ]
 
 
