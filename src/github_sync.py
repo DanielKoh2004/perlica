@@ -247,9 +247,28 @@ async def fetch_github_repo_tree(
         target_branch = branch
         if commit_resp.status_code == 404 and branch == "main":
             # Fallback to master branch
-            commit_api_url = f"https://api.github.com/repos/{repo_name}/commits/master"
-            commit_resp = await client.get(commit_api_url, headers=headers)
-            target_branch = "master"
+            master_url = f"https://api.github.com/repos/{repo_name}/commits/master"
+            master_resp = await client.get(master_url, headers=headers)
+            if master_resp.status_code == 200:
+                commit_resp = master_resp
+                target_branch = "master"
+
+        if commit_resp.status_code == 401:
+            raise RuntimeError(
+                "GitHub authentication failed (401 Unauthorized). "
+                "Please verify that your GITHUB_TOKEN is valid and active."
+            )
+        elif commit_resp.status_code == 404:
+            if not auth_token:
+                raise RuntimeError(
+                    f"Repository '{repo_name}' not found (404). "
+                    "If this is a private repository, please add your 'GITHUB_TOKEN' (with 'repo' scope) to your environment/.env file."
+                )
+            else:
+                raise RuntimeError(
+                    f"Repository '{repo_name}' (branch '{branch}') not found (404). "
+                    "Please verify that the repository name and branch exist, and that your GITHUB_TOKEN has access permissions."
+                )
 
         commit_resp.raise_for_status()
         commit_data = commit_resp.json()
