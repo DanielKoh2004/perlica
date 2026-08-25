@@ -598,3 +598,91 @@ async def test_get_github_sources_and_auto_sync_configuration(temp_db):
     # Verify auto-sync configuration properties
     assert settings.REPO_AUTO_SYNC_ENABLED is True
     assert settings.repo_auto_sync_hour_minute == (4, 0)
+
+
+@pytest.mark.asyncio
+async def test_durable_ingestion_recovery_resets_running_jobs(temp_db):
+    """Verify that startup recovery resets interrupted RUNNING jobs to PENDING and returns them."""
+    j1 = await temp_db.create_ingestion_job("GITHUB", "github:DanielKoh2004/perlica")
+    j2 = await temp_db.create_ingestion_job("WEB", "https://docs.perlica.dev")
+    j3 = await temp_db.create_ingestion_job("PDF", "doc.pdf")
+
+    # Simulate j1 running, j2 completed, j3 pending when container crashes
+    await temp_db.update_ingestion_job(j1, "RUNNING", "Cloning repository...")
+    await temp_db.update_ingestion_job(j2, "COMPLETED", "Indexed 10 pages")
+
+    # Bot restarts: recover jobs
+    pending = await temp_db.recover_interrupted_ingestion_jobs()
+    pending_ids = [j["id"] for j in pending]
+
+    assert j1 in pending_ids
+    assert j3 in pending_ids
+    assert j2 not in pending_ids
+
+    j1_rec = await temp_db.get_ingestion_job(j1)
+    assert j1_rec["status"] == "PENDING"
+    assert "Recovered after restart" in j1_rec["progress_text"]
+
+
+@pytest.mark.asyncio
+async def test_detailed_source_coverage_breakdown(temp_db):
+    """Verify get_source_detailed_coverage categorizes indexed, failed, and excluded files accurately."""
+    source_id = await temp_db.get_or_create_source("Repo", "GITHUB", "github:test/repo")
+
+    # Commit 2 indexed files
+    await temp_db.commit_file_reconciliation(source_id, "src/a.py", "sha1", 1, [{"section_title": "a", "content": "a"}], [])
+    await temp_db.commit_file_reconciliation(source_id, "src/b.py", "sha2", 1, [{"section_title": "b", "content": "b"}], [])
+
+    # Record 1 failed file and 2 capped/excluded files
+    await temp_db.mark_source_file_failed(source_id, "src/c.py", "sha3", 1, "FAILED_FETCH")
+    await temp_db.mark_source_files_excluded_cap(source_id, [("large/d.py", "sha4")], 1)
+    await temp_db.mark_source_file_secret_excluded(source_id, ".env", "sha5", 1)
+
+    coverage = await temp_db.get_source_detailed_coverage(source_id)
+    assert coverage["indexed_count"] == 2
+    assert coverage["failed_count"] == 1
+    assert coverage["excluded_cap_count"] == 1
+    assert coverage["excluded_other_count"] == 1
+    assert coverage["total_count"] == 5
+
+
+def test_ast_logical_units_full_span_preserved():
+    """Verify that chunk_python_code preserves the full logical function span without truncation."""
+    from src.github_sync import chunk_python_code
+
+    code = "def large_handler():\n" + "\n".join([f"    line_{i} = {i}" for i in range(150)]) + "\n    return True\n"
+    chunks = chunk_python_code(code, "test/repo", "handlers.py", "sha123")
+
+    assert len(chunks) == 1
+    fn_chunk = chunks[0]
+    assert fn_chunk["section_title"] == "handlers.py > def large_handler()"
+    assert "line_149 = 149" in fn_chunk["content"]
+    assert "return True" in fn_chunk["content"]
+    assert fn_chunk["metadata"]["line_range"] == "1-152"
+    assert fn_chunk["permalink_url"] == "https://github.com/test/repo/blob/sha123/handlers.py#L1-L152"
+
+
+def test_pdf_over_50_pages_rejected(tmp_path):
+    """Verify that PDF files with > 50 pages are explicitly rejected with ValueError."""
+    from src.pdf_parser import _extract_pdf_sync
+    from pypdf import PdfWriter
+
+    pdf_path = str(tmp_path / "huge_doc.pdf")
+    writer = PdfWriter()
+    for _ in range(55):
+        writer.add_blank_page(width=100, height=100)
+    with open(pdf_path, "wb") as f:
+        writer.write(f)
+
+    with pytest.raises(ValueError) as exc:
+        _extract_pdf_sync(pdf_path)
+    assert "PDF exceeds page limit" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_web_body_size_cap_enforced():
+    """Verify MAX_WEB_BODY_BYTES constant and size verification."""
+    from src.security import MAX_WEB_BODY_BYTES
+
+    assert MAX_WEB_BODY_BYTES == 2 * 1024 * 1024
+

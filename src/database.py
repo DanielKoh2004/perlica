@@ -2032,6 +2032,29 @@ class DatabaseManager:
                 row = await cur.fetchone()
                 return dict(row) if row else None
 
+    async def recover_interrupted_ingestion_jobs(self) -> List[Dict[str, Any]]:
+        """
+        Durable worker startup recovery:
+        Resets any jobs left in 'RUNNING' status back to 'PENDING', and returns all 'PENDING' jobs
+        so they can be executed by the background worker.
+        """
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE ingestion_jobs
+                SET status = 'PENDING', progress_text = 'Recovered after restart; queued for execution...', updated_at = ?
+                WHERE status = 'RUNNING'
+                """,
+                (now_str,),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT * FROM ingestion_jobs WHERE status = 'PENDING' ORDER BY id ASC"
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
     async def commit_file_reconciliation(
         self,
         source_id: int,
@@ -2481,6 +2504,40 @@ class DatabaseManager:
             cur = await conn.execute("DELETE FROM sources WHERE source_ref = ?", (source_ref,))
             await conn.commit()
             return cur.rowcount > 0
+
+    async def get_source_detailed_coverage(self, source_id: int) -> Dict[str, int]:
+        """
+        Compute precise status breakdown of all source files for a given source:
+        - indexed_count (status = 'INDEXED')
+        - failed_count (status IN ('FAILED_FETCH', 'FAILED_PARSE', 'FAILED_EMBED'))
+        - excluded_cap_count (status = 'EXCLUDED_CAP')
+        - excluded_other_count (status IN ('EXCLUDED_SECRET', 'EXCLUDED_DIR', 'EXCLUDED_LOCKFILE', 'EXCLUDED_BINARY', 'EXCLUDED_SIZE'))
+        - total_count (all source_files rows)
+        """
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT 
+                    COUNT(CASE WHEN status = 'INDEXED' THEN 1 END) as indexed_count,
+                    COUNT(CASE WHEN status IN ('FAILED_FETCH', 'FAILED_PARSE', 'FAILED_EMBED') THEN 1 END) as failed_count,
+                    COUNT(CASE WHEN status = 'EXCLUDED_CAP' THEN 1 END) as excluded_cap_count,
+                    COUNT(CASE WHEN status IN ('EXCLUDED_SECRET', 'EXCLUDED_DIR', 'EXCLUDED_LOCKFILE', 'EXCLUDED_BINARY', 'EXCLUDED_SIZE') THEN 1 END) as excluded_other_count,
+                    COUNT(*) as total_count
+                FROM source_files
+                WHERE source_id = ?
+                """,
+                (source_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+                return {
+                    "indexed_count": 0,
+                    "failed_count": 0,
+                    "excluded_cap_count": 0,
+                    "excluded_other_count": 0,
+                    "total_count": 0,
+                }
 
     async def store_quick_note(self, content: str, section_title: str = "Quick Note") -> int:
         """Store a quick note directly into SQLite NOTES source and link to an INDEXED source_files row."""

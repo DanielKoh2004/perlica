@@ -112,9 +112,12 @@ def validate_safe_url(url: str) -> str:
     return url
 
 
+MAX_WEB_BODY_BYTES = 2 * 1024 * 1024  # 2 MB hard body limit
+
+
 async def fetch_safe_url(url: str, max_redirects: int = 3, timeout: float = 10.0) -> httpx.Response:
     """
-    Fetch a remote URL safely with per-hop SSRF validation.
+    Fetch a remote URL safely with per-hop SSRF validation and hard body size limits.
     """
     current_url = validate_safe_url(url)
     redirects_left = max_redirects
@@ -140,6 +143,15 @@ async def fetch_safe_url(url: str, max_redirects: int = 3, timeout: float = 10.0
                 continue
 
             response.raise_for_status()
+
+            # Enforce hard response body size limit
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_WEB_BODY_BYTES:
+                raise ValueError(f"Webpage response exceeds size limit ({int(content_length)} > {MAX_WEB_BODY_BYTES} bytes).")
+
+            if len(response.content) > MAX_WEB_BODY_BYTES:
+                raise ValueError(f"Webpage content exceeds size limit ({len(response.content)} > {MAX_WEB_BODY_BYTES} bytes).")
+
             return response
 
 

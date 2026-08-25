@@ -33,6 +33,7 @@ class CopilotCoverage:
     eligible_count: int = 0
     indexed_count: int = 0
     failed_count: int = 0
+    excluded_count: int = 0
     ratio: Optional[str] = None
     target_source: Optional[str] = None
 
@@ -93,7 +94,7 @@ import gc
 
 # Singleton embedder instance for FastEmbed ONNX runtime
 _EMBEDDER_INSTANCE: Optional[TextEmbedding] = None
-MODEL_ID = "bge-small-en-v1.5"
+MODEL_ID: str = "bge-small-en-v1.5"
 
 
 def get_embedder() -> TextEmbedding:
@@ -107,7 +108,7 @@ def get_embedder() -> TextEmbedding:
 def compute_embedding(text: str) -> bytes:
     """Compute 384-d dense vector for a single string, returning bytes."""
     embedder = get_embedder()
-    generator = embedder.embed([text[:2000]], batch_size=1)
+    generator = embedder.embed([text[:4000]], batch_size=1)
     vec = next(generator).astype(np.float32)
     return vec.tobytes()
 
@@ -117,7 +118,7 @@ def compute_embeddings_batch(texts: List[str], batch_size: int = 8) -> List[byte
     if not texts:
         return []
     embedder = get_embedder()
-    clamped_texts = [t[:2000] for t in texts]
+    clamped_texts = [t[:4000] for t in texts]
 
     results: List[bytes] = []
     # Process in micro-batches of 16 to avoid large intermediate tensor allocations in ONNX runtime
@@ -515,15 +516,29 @@ async def synthesize_copilot_answer(
     cov_status_success: Literal["COMPLETE", "PARTIAL", "EMPTY"] = (
         "PARTIAL" if (target_source and target_source.get("status") == "PARTIAL") else "COMPLETE"
     )
-    eligible_succ = target_source.get("eligible_count", 0) if target_source else len(clamped_chunks)
-    indexed_succ = target_source.get("indexed_count", 0) if target_source else len(clamped_chunks)
-    cov_ratio_succ = f"{indexed_succ} / {eligible_succ}" if target_source else f"{len(clamped_chunks)} chunks retrieved"
+    if target_source and "id" in target_source:
+        details = await db.get_source_detailed_coverage(target_source["id"])
+        indexed_succ = details.get("indexed_count", 0)
+        failed_succ = details.get("failed_count", 0)
+        excluded_succ = details.get("excluded_cap_count", 0) + details.get("excluded_other_count", 0)
+        eligible_succ = details.get("total_count", 0)
+        if excluded_succ > 0:
+            cov_ratio_succ = f"{indexed_succ} / {eligible_succ} ({excluded_succ} excluded)"
+        else:
+            cov_ratio_succ = f"{indexed_succ} / {eligible_succ}"
+    else:
+        eligible_succ = len(clamped_chunks)
+        indexed_succ = len(clamped_chunks)
+        failed_succ = 0
+        excluded_succ = 0
+        cov_ratio_succ = f"{len(clamped_chunks)} chunks retrieved"
 
     coverage_obj = CopilotCoverage(
         status=cov_status_success,
         eligible_count=eligible_succ,
         indexed_count=indexed_succ,
-        failed_count=max(0, eligible_succ - indexed_succ),
+        failed_count=failed_succ,
+        excluded_count=excluded_succ,
         ratio=cov_ratio_succ,
         target_source=target_source["name"] if target_source else None,
     )

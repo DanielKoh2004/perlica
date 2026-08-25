@@ -1659,6 +1659,38 @@ async def slash_ask(
                 await interaction.followup.send(embed=emb)
 
 
+async def execute_ingestion_job(job_id: int, source_type: str, target_ref: str):
+    """Execute a single ingestion job durably based on its source type."""
+    try:
+        if source_type == "GITHUB":
+            clean_ref = target_ref.replace("github:", "")
+            parts = clean_ref.split(":")
+            repo = parts[0]
+            branch = parts[1] if len(parts) > 1 else "main"
+            await run_repo_sync_job(job_id, repo, branch)
+        elif source_type == "WEB":
+            await run_web_ingest_job(job_id, target_ref)
+        elif source_type == "PDF":
+            await run_pdf_ingest_job(job_id, target_ref)
+        else:
+            await db.update_ingestion_job(job_id, "FAILED", error_message=f"Unknown source type: {source_type}")
+    except Exception as e:
+        logger.error(f"Error executing ingestion job #{job_id}: {e}", exc_info=True)
+        await db.update_ingestion_job(job_id, "FAILED", error_message=str(e)[:300])
+
+
+async def recover_and_resume_ingestion_jobs():
+    """Startup recovery: resets interrupted RUNNING jobs and resumes all PENDING jobs."""
+    try:
+        pending_jobs = await db.recover_interrupted_ingestion_jobs()
+        if pending_jobs:
+            logger.info(f"Recovered {len(pending_jobs)} interrupted/pending ingestion jobs on startup.")
+            for job in pending_jobs:
+                asyncio.create_task(execute_ingestion_job(job["id"], job["source_type"], job["target_ref"]))
+    except Exception as e:
+        logger.warning(f"Failed to recover ingestion jobs on startup: {e}")
+
+
 @bot.tree.command(name="repo", description="Manage GitHub repository indexing and reconciliation")
 @app_commands.describe(action="Action to perform", repo="Repository in owner/repo format (e.g. DanielKoh2004/perlica)", branch="Branch to sync (default: main)")
 @app_commands.choices(action=[
@@ -1703,7 +1735,7 @@ async def slash_repo(
 
     # Action: sync -> Dispatch background job
     job_id = await db.create_ingestion_job(source_type="GITHUB", target_ref=source_ref)
-    asyncio.create_task(run_repo_sync_job(job_id, repo_clean, branch=branch))
+    asyncio.create_task(execute_ingestion_job(job_id, "GITHUB", source_ref))
 
     await interaction.response.send_message(
         f"🚀 **Repository Sync Queued (Job #{job_id})**\n"
@@ -1729,7 +1761,7 @@ class WebIngestModal(discord.ui.Modal, title="🌐 Ingest Webpage URL"):
     async def on_submit(self, interaction: discord.Interaction):
         url_clean = self.url_input.value.strip()
         job_id = await db.create_ingestion_job(source_type="WEB", target_ref=url_clean)
-        asyncio.create_task(run_web_ingest_job(job_id, url_clean))
+        asyncio.create_task(execute_ingestion_job(job_id, "WEB", url_clean))
         await interaction.response.send_message(
             f"🌐 **Web Ingestion Queued (Job #{job_id})**\n"
             f"Fetching and parsing `{url_clean}` with SSRF safety in the background.\n"
@@ -1757,8 +1789,9 @@ class RepoSyncModal(discord.ui.Modal, title="🐙 Sync GitHub Repository"):
     async def on_submit(self, interaction: discord.Interaction):
         repo_clean = self.repo_input.value.strip()
         branch_clean = self.branch_input.value.strip() or "main"
-        job_id = await db.create_ingestion_job(source_type="GITHUB", target_ref=f"{repo_clean}:{branch_clean}")
-        asyncio.create_task(run_repo_sync_job(job_id, repo_clean, branch_clean))
+        target_ref = f"{repo_clean}:{branch_clean}"
+        job_id = await db.create_ingestion_job(source_type="GITHUB", target_ref=target_ref)
+        asyncio.create_task(execute_ingestion_job(job_id, "GITHUB", target_ref))
         await interaction.response.send_message(
             f"🚀 **Repository Sync Queued (Job #{job_id})**\n"
             f"Indexing `{repo_clean}` (`{branch_clean}`) with incremental Git SHA reconciliation in the background.\n"
@@ -2190,6 +2223,8 @@ async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     await db.init_db()
     logger.info("Database schema initialized successfully.")
+
+    await recover_and_resume_ingestion_jobs()
 
     bot.add_view(QuickActionView())
     bot.add_view(LiveDashboardView())
@@ -2642,7 +2677,7 @@ async def on_message(message: discord.Message):
                         with open(dest_path, "wb") as f:
                             f.write(pdf_bytes)
                         job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
-                        asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
+                        asyncio.create_task(execute_ingestion_job(job_id, "PDF", dest_path))
                         await message.reply(
                             f"📄 **Knowledge Ingestion Session: Processing Started! (Job #{job_id})**\n"
                             f"Extracting and vector-indexing `{safe_filename}` in the background.\n"
