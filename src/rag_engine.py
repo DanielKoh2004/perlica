@@ -324,14 +324,42 @@ async def synthesize_copilot_answer(
     user_prompt = f"USER QUERY: {query}\n\n<BEGIN UNTRUSTED EVIDENCE>\n{evidence_str}\n<END UNTRUSTED EVIDENCE>"
 
     client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-    chat_completion = await client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,
-    )
+    candidate_models = [settings.GROQ_MODEL]
+    for m in [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+        "groq/compound-mini",
+        "allam-2-7b",
+        "llama-3.1-8b-instant",
+    ]:
+        if m and m not in candidate_models:
+            candidate_models.append(m)
+
+    chat_completion = None
+    last_err = None
+    for model_name in candidate_models:
+        try:
+            chat_completion = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.1,
+            )
+            break
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            if "model_not_found" in err_str or "404" in err_str or "does not exist" in err_str:
+                logger.warning(f"Groq model '{model_name}' unavailable, trying fallback: {e}")
+                continue
+            raise e
+
+    if chat_completion is None:
+        raise last_err or RuntimeError("All candidate Groq models failed.")
+
     llm_response = chat_completion.choices[0].message.content or ""
 
     # Record historical answer evidence snapshot
