@@ -50,10 +50,28 @@ from src.formatters import (
     format_focus_task_embed,
     get_time_aware_greeting,
     get_upcoming_malaysian_holidays,
-    format_upcoming_holidays_embed,
     format_fuel_receipt_embed,
     generate_html_report,
     render_progress_bar,
+    format_copilot_answer_embed,
+    format_sources_dashboard_embed,
+    CopilotAnswerView,
+)
+from src.security import is_user_authorized_for_copilot, scan_content_for_secrets
+from src.github_sync import (
+    fetch_github_repo_tree,
+    fetch_github_blob_content,
+    is_eligible_repo_file,
+    chunk_python_code,
+    chunk_generic_code,
+)
+from src.pdf_parser import parse_pdf_file
+from src.web_scraper import scrape_webpage
+from src.rag_engine import (
+    synthesize_copilot_answer,
+    compute_embeddings_batch,
+    chunk_markdown_text,
+    MODEL_ID,
 )
 
 logging.basicConfig(
@@ -1356,7 +1374,340 @@ async def category_autocomplete(
     ]
 
 
+async def source_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete for active knowledge sources with strict 25 cap."""
+    sources = await db.get_knowledge_sources_summary()
+    choices = []
+    for s in sources:
+        label = f"{s['name']} ({s['source_type']})"
+        ref = s["source_ref"]
+        if not current.strip() or current.lower() in label.lower() or current.lower() in ref.lower():
+            choices.append(app_commands.Choice(name=label[:100], value=ref))
+    return choices[:25]
+
+
+# --- KNOWLEDGE COPILOT ASYNCHRONOUS INGESTION WORKERS ---
+
+async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
+    """Background worker to synchronize a GitHub repository with manifest diffing."""
+    try:
+        await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Fetching tree for {repo_name}...")
+        commit_sha, tree_entries = await fetch_github_repo_tree(repo_name, branch=branch)
+
+        source_ref = f"github:{repo_name}"
+        source_id = await db.get_or_create_source(name=repo_name, source_type="GITHUB", source_ref=source_ref)
+
+        manifest = await db.get_source_files_manifest(source_id)
+
+        eligible_files = []
+        for entry in tree_entries:
+            if entry.get("type") != "blob":
+                continue
+            path = entry.get("path", "")
+            size = entry.get("size", 0)
+            eligible, _ = is_eligible_repo_file(path, size)
+            if eligible:
+                eligible_files.append(entry)
+
+        # Cap at 250 files
+        eligible_files = eligible_files[:250]
+        eligible_count = len(eligible_files)
+        indexed_count = 0
+
+        for idx, entry in enumerate(eligible_files):
+            path = entry["path"]
+            blob_sha = entry["sha"]
+
+            # Check if unchanged
+            prev_file = manifest.get(path)
+            if prev_file and prev_file.get("blob_sha") == blob_sha and prev_file.get("status") == "INDEXED":
+                async with db.get_connection() as conn:
+                    await conn.execute("UPDATE source_files SET last_seen_sync_id = ? WHERE id = ?", (job_id, prev_file["id"]))
+                    await conn.commit()
+                indexed_count += 1
+                continue
+
+            # Fetch content
+            await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Indexing ({idx+1}/{eligible_count}): {path}")
+            raw_code = await fetch_github_blob_content(repo_name, path, commit_sha)
+            if raw_code is None or scan_content_for_secrets(raw_code):
+                continue
+
+            # Chunk
+            if path.endswith(".py"):
+                chunks = chunk_python_code(raw_code, repo_name, path, commit_sha)
+            else:
+                chunks = chunk_generic_code(raw_code, repo_name, path, commit_sha)
+
+            if not chunks:
+                continue
+
+            # Embed
+            texts = [c["content"] for c in chunks]
+            embs = await asyncio.to_thread(compute_embeddings_batch, texts)
+            emb_tuples = [(MODEL_ID, e) for e in embs]
+
+            # Short atomic commit
+            await db.commit_file_reconciliation(
+                source_id=source_id,
+                file_path=path,
+                blob_sha=blob_sha,
+                sync_id=job_id,
+                chunks=chunks,
+                embeddings=emb_tuples,
+            )
+            indexed_count += 1
+
+        # Purge deleted files
+        await db.purge_unseen_source_files(source_id, current_sync_id=job_id)
+
+        status_tag = "COMPLETE" if indexed_count == eligible_count else "PARTIAL"
+        await db.update_source_status(source_id, eligible_count=eligible_count, indexed_count=indexed_count, status=status_tag)
+        await db.update_ingestion_job(job_id, "COMPLETED", progress_text=f"Sync finished ({indexed_count}/{eligible_count} files indexed).")
+
+    except Exception as e:
+        logger.error(f"Repo sync job #{job_id} failed: {e}", exc_info=True)
+        await db.update_ingestion_job(job_id, "FAILED", error_message=str(e))
+        source = await db.get_source_by_ref(f"github:{repo_name}")
+        if source:
+            await db.update_source_status(source["id"], eligible_count=0, indexed_count=0, status="FAILED", last_error=str(e))
+
+
+async def run_web_ingest_job(job_id: int, url: str):
+    """Background worker to ingest a web page."""
+    try:
+        await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Scraping {url}...")
+        chunks = await scrape_webpage(url)
+        if not chunks:
+            raise ValueError("No extractable content found or secret content blocked.")
+
+        source_ref = f"web:{url}"
+        source_id = await db.get_or_create_source(name=url[:40], source_type="WEB", source_ref=source_ref)
+
+        texts = [c["content"] for c in chunks]
+        embs = await asyncio.to_thread(compute_embeddings_batch, texts)
+        emb_tuples = [(MODEL_ID, e) for e in embs]
+
+        await db.commit_file_reconciliation(
+            source_id=source_id,
+            file_path=url,
+            blob_sha="web",
+            sync_id=job_id,
+            chunks=chunks,
+            embeddings=emb_tuples,
+        )
+
+        await db.update_source_status(source_id, eligible_count=1, indexed_count=1, status="COMPLETE")
+        await db.update_ingestion_job(job_id, "COMPLETED", progress_text=f"Webpage indexed ({len(chunks)} chunks).")
+
+    except Exception as e:
+        logger.error(f"Web ingest job #{job_id} failed: {e}", exc_info=True)
+        await db.update_ingestion_job(job_id, "FAILED", error_message=str(e))
+
+
+async def run_pdf_ingest_job(job_id: int, file_path: str):
+    """Background worker to ingest a local PDF file."""
+    try:
+        await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Parsing PDF {file_path}...")
+        chunks = await parse_pdf_file(file_path)
+        if not chunks:
+            raise ValueError("No extractable text found in PDF.")
+
+        filename = os.path.basename(file_path)
+        source_ref = f"pdf:{filename}"
+        source_id = await db.get_or_create_source(name=filename, source_type="PDF", source_ref=source_ref)
+
+        texts = [c["content"] for c in chunks]
+        embs = await asyncio.to_thread(compute_embeddings_batch, texts)
+        emb_tuples = [(MODEL_ID, e) for e in embs]
+
+        await db.commit_file_reconciliation(
+            source_id=source_id,
+            file_path=filename,
+            blob_sha="pdf",
+            sync_id=job_id,
+            chunks=chunks,
+            embeddings=emb_tuples,
+        )
+
+        await db.update_source_status(source_id, eligible_count=1, indexed_count=1, status="COMPLETE")
+        await db.update_ingestion_job(job_id, "COMPLETED", progress_text=f"PDF indexed ({len(chunks)} pages/chunks).")
+
+    except Exception as e:
+        logger.error(f"PDF ingest job #{job_id} failed: {e}", exc_info=True)
+        await db.update_ingestion_job(job_id, "FAILED", error_message=str(e))
+
+
 # --- DISCORD SLASH COMMANDS (APPLICATION TREE) ---
+
+@bot.tree.command(name="ask", description="Ask an evidence-grounded question across indexed repositories and documents")
+@app_commands.describe(query="Your question", in_source="Optional scope to search only within a specific source")
+@app_commands.autocomplete(in_source=source_autocomplete)
+async def slash_ask(
+    interaction: discord.Interaction,
+    query: str,
+    in_source: Optional[str] = None,
+):
+    if not is_user_authorized_for_copilot(interaction.user.id):
+        await interaction.response.send_message("⛔ You are not authorized to query the private knowledge base.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    answer_data = await synthesize_copilot_answer(
+        db=db,
+        query=query,
+        source_scope=in_source,
+        user_id=str(interaction.user.id),
+    )
+
+    embed = format_copilot_answer_embed(answer_data)
+    view = CopilotAnswerView(answer_id=answer_data.get("answer_id"), db_manager=db)
+    await interaction.followup.send(embed=embed, view=view)
+
+
+@bot.tree.command(name="repo", description="Manage GitHub repository indexing and reconciliation")
+@app_commands.describe(action="Action to perform", repo="Repository in owner/repo format (e.g. DanielKoh2004/perlica)", branch="Branch to sync (default: main)")
+@app_commands.choices(action=[
+    app_commands.Choice(name="🔄 Sync / Reconcile", value="sync"),
+    app_commands.Choice(name="🗑️ Purge", value="purge"),
+    app_commands.Choice(name="ℹ️ Info", value="info"),
+])
+async def slash_repo(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    repo: str,
+    branch: str = "main",
+):
+    if not is_user_authorized_for_copilot(interaction.user.id):
+        await interaction.response.send_message("⛔ You are not authorized to manage knowledge sources.", ephemeral=True)
+        return
+
+    repo_clean = repo.strip().replace("https://github.com/", "").strip("/")
+    source_ref = f"github:{repo_clean}"
+
+    if action.value == "purge":
+        deleted = await db.delete_knowledge_source(source_ref)
+        if deleted:
+            await interaction.response.send_message(f"🗑️ Successfully purged repository `{repo_clean}` and all its index chunks.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Source `{repo_clean}` was not found in the index.", ephemeral=True)
+        return
+
+    if action.value == "info":
+        source = await db.get_source_by_ref(source_ref)
+        if not source:
+            await interaction.response.send_message(f"Repository `{repo_clean}` is not currently indexed.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"🐙 **{source['name']}**\n"
+            f"• Status: `{source['status']}`\n"
+            f"• Coverage: `{source['indexed_count']} / {source['eligible_count']}` files indexed\n"
+            f"• Last Synced: `{source['last_sync_at'] or 'Never'}`",
+            ephemeral=True
+        )
+        return
+
+    # Action: sync -> Dispatch background job
+    job_id = await db.create_ingestion_job(source_type="GITHUB", target_ref=source_ref)
+    asyncio.create_task(run_repo_sync_job(job_id, repo_clean, branch=branch))
+
+    await interaction.response.send_message(
+        f"🚀 **Repository Sync Queued (Job #{job_id})**\n"
+        f"Indexing `{repo_clean}` (`{branch}`) with incremental Git SHA reconciliation in the background.\n"
+        f"Use `/sources` to view live status.",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="ingest", description="Ingest a webpage URL or local PDF into the knowledge base")
+@app_commands.describe(source_type="Type of source to ingest", target="Webpage URL or path to PDF")
+@app_commands.choices(source_type=[
+    app_commands.Choice(name="🌐 Web Page URL", value="web"),
+    app_commands.Choice(name="📄 PDF Document", value="pdf"),
+])
+async def slash_ingest(
+    interaction: discord.Interaction,
+    source_type: app_commands.Choice[str],
+    target: str,
+):
+    if not is_user_authorized_for_copilot(interaction.user.id):
+        await interaction.response.send_message("⛔ You are not authorized to ingest sources.", ephemeral=True)
+        return
+
+    target_clean = target.strip()
+
+    if source_type.value == "web":
+        job_id = await db.create_ingestion_job(source_type="WEB", target_ref=target_clean)
+        asyncio.create_task(run_web_ingest_job(job_id, target_clean))
+        await interaction.response.send_message(
+            f"🌐 **Web Ingestion Queued (Job #{job_id})**\n"
+            f"Fetching and parsing `{target_clean}` with SSRF safety in the background.",
+            ephemeral=True
+        )
+    else:  # PDF
+        if not os.path.exists(target_clean):
+            # Check relative to KNOWLEDGE_DIR
+            alt_path = os.path.join(settings.KNOWLEDGE_DIR, target_clean)
+            if os.path.exists(alt_path):
+                target_clean = alt_path
+            else:
+                await interaction.response.send_message(f"❌ PDF file not found at path: `{target_clean}`", ephemeral=True)
+                return
+
+        job_id = await db.create_ingestion_job(source_type="PDF", target_ref=target_clean)
+        asyncio.create_task(run_pdf_ingest_job(job_id, target_clean))
+        await interaction.response.send_message(
+            f"📄 **PDF Ingestion Queued (Job #{job_id})**\n"
+            f"Extracting page-level text from `{os.path.basename(target_clean)}` in the background.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(name="note", description="Quickly save an instant note into the SQLite knowledge index")
+@app_commands.describe(content="Note content or snippet", title="Optional note section title")
+async def slash_note(
+    interaction: discord.Interaction,
+    content: str,
+    title: str = "Quick Note",
+):
+    if not is_user_authorized_for_copilot(interaction.user.id):
+        await interaction.response.send_message("⛔ You are not authorized to save notes.", ephemeral=True)
+        return
+
+    chunk_id = await db.store_quick_note(content=content, section_title=title)
+    
+    # Compute embedding for immediate vector retrieval
+    emb_blob = await asyncio.to_thread(compute_embedding, content)
+    async with db.get_connection() as conn:
+        await conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, model_id, embedding_blob) VALUES (?, ?, ?)",
+            (chunk_id, MODEL_ID, emb_blob),
+        )
+        await conn.commit()
+
+    await interaction.response.send_message(
+        f"📝 **Note Saved & Indexed!**\n"
+        f"• **Title**: `{title}`\n"
+        f"• **Content**: {content[:100]}{'...' if len(content) > 100 else ''}\n"
+        f"Searchable instantly via `/ask`!",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="sources", description="View and manage indexed knowledge repositories, documents, and notes")
+async def slash_sources(interaction: discord.Interaction):
+    if not is_user_authorized_for_copilot(interaction.user.id):
+        await interaction.response.send_message("⛔ You are not authorized to view knowledge sources.", ephemeral=True)
+        return
+
+    sources_summary = await db.get_knowledge_sources_summary()
+    embed = format_sources_dashboard_embed(sources_summary)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 @bot.tree.command(name="dashboard", description="Open your live interactive command center dashboard")
 async def slash_dashboard(interaction: discord.Interaction):
@@ -2170,6 +2521,31 @@ async def on_message(message: discord.Message):
     # Direct Help Command Check (e.g. "help", "!help", "guide")
     if content.lower().strip() in ("help", "!help", "guide", "commands", "/help"):
         await message.reply(embed=format_help_guide())
+        return
+
+    # Direct Ask / Copilot Query Check (e.g. "ask: how does auth work" or "? how is fuel calculated")
+    ask_match = re.match(r"^(?:ask|copilot|\?)\s*[:\s]\s*(.+)$", content, re.IGNORECASE)
+    if ask_match:
+        if not is_user_authorized_for_copilot(message.author.id):
+            await message.reply("⛔ You are not authorized to query the private knowledge base.")
+            return
+
+        query_text = ask_match.group(1).strip()
+        async with message.channel.typing():
+            answer_data = await synthesize_copilot_answer(db=db, query=query_text, user_id=str(message.author.id))
+            embed = format_copilot_answer_embed(answer_data)
+            view = CopilotAnswerView(answer_id=answer_data.get("answer_id"), db_manager=db)
+            await message.reply(embed=embed, view=view)
+        return
+
+    # Direct Sources Command Check
+    if content.lower().strip() in ("sources", "!sources", "/sources", "knowledge", "kb"):
+        if not is_user_authorized_for_copilot(message.author.id):
+            await message.reply("⛔ You are not authorized to view knowledge sources.")
+            return
+        sources_summary = await db.get_knowledge_sources_summary()
+        embed = format_sources_dashboard_embed(sources_summary)
+        await message.reply(embed=embed)
         return
 
     # Visual feedback: typing indicator in DM

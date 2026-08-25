@@ -1352,6 +1352,18 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
+        name="🤖 Evidence-Grounded Knowledge & Code Copilot",
+        value=(
+            "• `/ask query:... [in_source:...]` *(Grounded Q&A with deep citations & raw inspector)*\n"
+            "• `/repo sync repo:owner/name` *(Incremental Git SHA reconciliation)*\n"
+            "• `/ingest source_type:web|pdf target:...` *(SSRF-safe webpage & PDF extractor)*\n"
+            "• `/note content:... [title:...]` *(Instant indexed knowledge snippets)*\n"
+            "• `/sources` *(Live status, coverage ratio & 1-tap purge)*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="🇲🇾 Natural Malaysian & Manglish Ingestion",
         value=(
             "• `tapau nasi kandar rm 14.50 semalam` *(Auto-dates to yesterday)*\n"
@@ -1641,3 +1653,129 @@ def format_upcoming_holidays_embed(
     )
     embed.set_footer(text="Powered by official Malaysian lunar, lunisolar, and state calendar engine.")
     return embed
+
+
+def format_copilot_answer_embed(answer_data: Dict[str, Any]) -> discord.Embed:
+    """Format an Evidence-Grounded Copilot answer with source citations."""
+    status = answer_data.get("status", "SUCCESS")
+    query = answer_data.get("query", "")
+    response = answer_data.get("response", "")
+    citations = answer_data.get("citations", [])
+
+    if status == "ABSTAINED":
+        embed = discord.Embed(
+            title="🔍 Evidence Copilot: Abstention Notice",
+            description=response,
+            color=discord.Color.dark_grey(),
+        )
+        embed.set_footer(text="Grounded in indexed evidence | Abstains when evidence is insufficient.")
+        return embed
+
+    embed = discord.Embed(
+        title=f"🤖 Copilot: {query[:60]}..." if len(query) > 60 else f"🤖 Copilot: {query}",
+        description=response[:4000],
+        color=discord.Color.teal(),
+    )
+
+    if citations:
+        citation_lines = []
+        for i, cit in enumerate(citations[:6]):
+            permalink = cit.get("permalink")
+            label = cit.get("citation", f"Source {i+1}")
+            citation_lines.append(f"• **{label}**")
+
+        embed.add_field(
+            name="📚 Grounded Source Citations",
+            value="\n".join(citation_lines),
+            inline=False,
+        )
+
+    embed.set_footer(text="Grounded strictly in verified evidence | Click [📄 View Raw Source] to inspect excerpts.")
+    return embed
+
+
+def format_sources_dashboard_embed(sources_summary: List[Dict[str, Any]]) -> discord.Embed:
+    """Format the /sources dashboard overview."""
+    embed = discord.Embed(
+        title="📚 Knowledge & Codebase Sources Dashboard",
+        description="Active indexed knowledge repositories, documents, and notes:",
+        color=discord.Color.blurple(),
+    )
+
+    if not sources_summary:
+        embed.description = "No knowledge sources indexed yet. Use `/repo sync` or `/note` to add sources!"
+        return embed
+
+    for s in sources_summary:
+        s_type = s.get("source_type", "UNKNOWN")
+        badge = "🐙" if s_type == "GITHUB" else ("📄" if s_type == "PDF" else ("🌐" if s_type == "WEB" else "📝"))
+        status = s.get("status", "COMPLETE")
+        status_tag = "🟢 Complete" if status == "COMPLETE" else ("🟡 Partial" if status == "PARTIAL" else "🔴 Failed")
+        
+        eligible = s.get("eligible_count", 0)
+        indexed = s.get("indexed_count", 0)
+        actual_files = s.get("actual_files_count", 0)
+        chunks = s.get("total_chunks_count", 0)
+        last_sync = s.get("last_sync_at") or s.get("created_at") or "Never"
+
+        details = [
+            f"**Status**: {status_tag}",
+            f"**Files**: `{indexed} / {eligible}` eligible indexed (`{actual_files}` files active)",
+            f"**Chunks**: `{chunks}` semantic vectors",
+            f"**Last Sync**: `{last_sync}`",
+        ]
+        if s.get("last_error"):
+            details.append(f"⚠️ **Error**: `{s['last_error'][:60]}`")
+
+        embed.add_field(
+            name=f"{badge} {s['name']} (`{s['source_ref']}`)",
+            value="\n".join(details),
+            inline=False,
+        )
+
+    embed.set_footer(text="Manifest-based incremental sync | Zero ghost chunks guarantee")
+    return embed
+
+
+class RawEvidenceModal(discord.ui.Modal, title="📄 Verbatim Evidence Excerpt"):
+    evidence_text = discord.ui.TextInput(
+        label="Raw Source Text",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=4000,
+    )
+
+    def __init__(self, raw_content: str, citation_label: str):
+        super().__init__(title=f"📄 {citation_label[:40]}")
+        self.evidence_text.default = raw_content[:4000]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+
+class CopilotAnswerView(discord.ui.View):
+    """Interactive view for Copilot answer allowing 1-tap raw excerpt inspection."""
+
+    def __init__(self, answer_id: Optional[int], db_manager: Any):
+        super().__init__(timeout=300)
+        self.answer_id = answer_id
+        self.db = db_manager
+
+    @discord.ui.button(label="📄 View Raw Source", style=discord.ButtonStyle.secondary, emoji="🔍")
+    async def view_raw_source_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.answer_id:
+            await interaction.response.send_message("No evidence snapshots recorded for this answer.", ephemeral=True)
+            return
+
+        snapshots = await self.db.get_answer_evidence_snapshots(self.answer_id)
+        if not snapshots:
+            await interaction.response.send_message("Evidence snapshots could not be found.", ephemeral=True)
+            return
+
+        first_snap = snapshots[0]
+        modal = RawEvidenceModal(
+            raw_content=first_snap.get("raw_text", "No raw content found."),
+            citation_label=first_snap.get("citation", "Evidence Source"),
+        )
+        await interaction.response.send_modal(modal)
+

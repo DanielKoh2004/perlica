@@ -27,6 +27,27 @@ class Settings(BaseSettings):
     MORNING_BRIEFING_TIME: str = Field(default="08:30", description="Morning briefing dispatch time HH:MM")
     WEEKLY_REVIEW_TIME: str = Field(default="20:00", description="Sunday weekly review dispatch time HH:MM")
 
+    # Knowledge & Codebase Copilot Settings
+    GITHUB_TOKEN: Optional[str] = Field(default=None, description="GitHub Personal Access Token for repo sync")
+    ALLOWED_DISCORD_USERS: list[int] = Field(default_factory=list, description="Authorized Discord User IDs for Copilot")
+    SECRET_PATH_PATTERNS: list[str] = Field(
+        default_factory=lambda: [
+            ".env*",
+            "*.pem",
+            "*.key",
+            "id_rsa*",
+            "id_ed25519*",
+            "credentials.json",
+            "service_account.json",
+            "*.pfx",
+            "*.p12",
+            "*.kdbx",
+        ],
+        description="Glob patterns for secret paths to exclude from indexing",
+    )
+    KNOWLEDGE_DIR: str = Field(default="knowledge", description="Directory for local markdown/PDF archives")
+    COPILOT_CONTEXT_BUDGET_TOKENS: int = Field(default=2500, description="Max token budget for retrieved evidence in LLM prompt")
+
     @field_validator("ALLOWED_USER_ID", "DISCORD_CHANNEL_ID", mode="before")
     @classmethod
     def parse_optional_int(cls, value: Any) -> Optional[int]:

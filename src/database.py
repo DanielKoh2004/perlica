@@ -2,6 +2,7 @@ import os
 import io
 import re
 import csv
+import json
 from datetime import date, datetime, timedelta
 import aiosqlite
 from contextlib import asynccontextmanager
@@ -95,9 +96,14 @@ class DatabaseManager:
 
     @asynccontextmanager
     async def get_connection(self) -> AsyncGenerator[aiosqlite.Connection, None]:
-        """Async context manager yielding a connection configured with Row factory."""
+        """Async context manager yielding a connection configured with Row factory and mandatory WAL pragmas."""
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON;")
+            await conn.execute("PRAGMA recursive_triggers = ON;")
+            await conn.execute("PRAGMA journal_mode = WAL;")
+            await conn.execute("PRAGMA busy_timeout = 5000;")
+            await conn.execute("PRAGMA synchronous = NORMAL;")
             yield conn
 
     async def init_db(self) -> None:
@@ -207,21 +213,187 @@ class DatabaseManager:
                 if "recurring_bill_id" not in exp_cols:
                     await conn.execute("ALTER TABLE expenses ADD COLUMN recurring_bill_id INTEGER;")
 
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses(created_at);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_asset ON expenses(asset_name);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_milestone_key ON user_milestones(milestone_key);")
+
+            # --- KNOWLEDGE & CODEBASE COPILOT SCHEMA ---
+
+            # 7. Knowledge Sources Table
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);"
+                """
+                CREATE TABLE IF NOT EXISTS sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_ref TEXT NOT NULL UNIQUE,
+                    eligible_count INTEGER DEFAULT 0,
+                    indexed_count INTEGER DEFAULT 0,
+                    status TEXT DEFAULT 'COMPLETE',
+                    last_sync_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+
+            # 8. Source Files Manifest Table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS source_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                    path TEXT NOT NULL,
+                    blob_sha TEXT,
+                    last_seen_sync_id INTEGER,
+                    status TEXT DEFAULT 'INDEXED',
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(source_id, path)
+                );
+                """
+            )
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_source_files_source ON source_files(source_id);")
+
+            # 9. Knowledge Chunks Table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS knowledge_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                    source_file_id INTEGER REFERENCES source_files(id) ON DELETE CASCADE,
+                    section_title TEXT,
+                    permalink_url TEXT,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON knowledge_chunks(source_id);")
+
+            # 10. FTS5 Virtual Table on Knowledge Chunks
+            await conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+                    content,
+                    section_title,
+                    content='knowledge_chunks',
+                    content_rowid='id',
+                    tokenize="unicode61 remove_diacritics 2 tokenchars '_'"
+                );
+                """
+            )
+
+            # 11. FTS5 Synchronization Triggers
+            await conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ai AFTER INSERT ON knowledge_chunks BEGIN
+                    INSERT INTO knowledge_chunks_fts(rowid, content, section_title)
+                    VALUES (new.id, new.content, new.section_title);
+                END;
+                """
             )
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);"
+                """
+                CREATE TRIGGER IF NOT EXISTS knowledge_chunks_ad AFTER DELETE ON knowledge_chunks BEGIN
+                    INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content, section_title)
+                    VALUES ('delete', old.id, old.content, old.section_title);
+                END;
+                """
             )
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses(created_at);"
+                """
+                CREATE TRIGGER IF NOT EXISTS knowledge_chunks_au AFTER UPDATE ON knowledge_chunks BEGIN
+                    INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts, rowid, content, section_title)
+                    VALUES ('delete', old.id, old.content, old.section_title);
+                    INSERT INTO knowledge_chunks_fts(rowid, content, section_title)
+                    VALUES (new.id, new.content, new.section_title);
+                END;
+                """
             )
+
+            # 12. Chunk Embeddings Table
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_expenses_asset ON expenses(asset_name);"
+                """
+                CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                    chunk_id INTEGER PRIMARY KEY REFERENCES knowledge_chunks(id) ON DELETE CASCADE,
+                    model_id TEXT NOT NULL,
+                    embedding_blob BLOB NOT NULL
+                );
+                """
             )
+
+            # 13. Ingestion Job Queue Table
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_milestone_key ON user_milestones(milestone_key);"
+                """
+                CREATE TABLE IF NOT EXISTS ingestion_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT NOT NULL,
+                    target_ref TEXT NOT NULL,
+                    status TEXT DEFAULT 'PENDING',
+                    progress_text TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
             )
+
+            # 14. Answer Snapshots Table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS answers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    user_id TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+
+            # 15. Historical Answer Evidence Table (Decoupled from cascades)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS answer_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    answer_id INTEGER NOT NULL REFERENCES answers(id) ON DELETE CASCADE,
+                    source_id INTEGER,
+                    source_file_id INTEGER,
+                    citation TEXT NOT NULL,
+                    raw_text TEXT NOT NULL,
+                    metadata_json TEXT
+                );
+                """
+            )
+
+            # 16. Retrieval Telemetry Logs Table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retrieval_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    top_cosine_json TEXT,
+                    bm25_hit_count INTEGER,
+                    rrf_results_json TEXT,
+                    selected_sources_json TEXT,
+                    context_token_count INTEGER,
+                    user_feedback TEXT,
+                    answer_id INTEGER,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+
+            # Explicit Bootstrap Action: Rebuild FTS5 on initial setup/migration
+            try:
+                await conn.execute("INSERT INTO knowledge_chunks_fts(knowledge_chunks_fts) VALUES ('rebuild');")
+            except Exception:
+                pass
+
             await conn.commit()
 
     # --- EXPENSES & WEALTH LOGGING ---
@@ -1746,6 +1918,468 @@ class DatabaseManager:
                     diff_mins = 0
                 res["minutes_ago"] = diff_mins
                 return res
+
+    # --- KNOWLEDGE & CODEBASE COPILOT METHODS ---
+
+    async def get_or_create_source(
+        self,
+        name: str,
+        source_type: str,
+        source_ref: str,
+        eligible_count: int = 0,
+    ) -> int:
+        """Fetch or create a knowledge source record."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                "SELECT id FROM sources WHERE source_ref = ?", (source_ref,)
+            ) as cur:
+                row = await cur.fetchone()
+                if row:
+                    return row["id"]
+
+            cursor = await conn.execute(
+                """
+                INSERT INTO sources (name, source_type, source_ref, eligible_count, indexed_count, status, created_at)
+                VALUES (?, ?, ?, ?, 0, 'COMPLETE', ?)
+                """,
+                (name, source_type, source_ref, eligible_count, now_str),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_source_status(
+        self,
+        source_id: int,
+        eligible_count: int,
+        indexed_count: int,
+        status: str,
+        last_error: Optional[str] = None,
+    ) -> None:
+        """Update source metrics, status ('COMPLETE', 'PARTIAL', 'FAILED'), and timestamp."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE sources
+                SET eligible_count = ?, indexed_count = ?, status = ?, last_error = ?, last_sync_at = ?
+                WHERE id = ?
+                """,
+                (eligible_count, indexed_count, status, last_error, now_str, source_id),
+            )
+            await conn.commit()
+
+    async def get_source_by_ref(self, source_ref: str) -> Optional[Dict[str, Any]]:
+        """Fetch source record by its unique reference string."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM sources WHERE source_ref = ?", (source_ref,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_source_by_id(self, source_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch source record by primary key."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_source_files_manifest(self, source_id: int) -> Dict[str, Dict[str, Any]]:
+        """Get mapping of path -> row dict for all known source files in a source."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM source_files WHERE source_id = ?", (source_id,)) as cur:
+                rows = await cur.fetchall()
+                return {r["path"]: dict(r) for r in rows}
+
+    async def create_ingestion_job(self, source_type: str, target_ref: str) -> int:
+        """Create a new background ingestion job record."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO ingestion_jobs (source_type, target_ref, status, progress_text, created_at, updated_at)
+                VALUES (?, ?, 'PENDING', 'Queued for processing...', ?, ?)
+                """,
+                (source_type, target_ref, now_str, now_str),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_ingestion_job(
+        self,
+        job_id: int,
+        status: str,
+        progress_text: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Update background ingestion job progress and status."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE ingestion_jobs
+                SET status = ?, progress_text = COALESCE(?, progress_text), error_message = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, progress_text, error_message, now_str, job_id),
+            )
+            await conn.commit()
+
+    async def get_ingestion_job(self, job_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch ingestion job status."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def commit_file_reconciliation(
+        self,
+        source_id: int,
+        file_path: str,
+        blob_sha: Optional[str],
+        sync_id: int,
+        chunks: List[Dict[str, Any]],
+        embeddings: List[Tuple[str, bytes]],
+    ) -> int:
+        """
+        Atomically commit reconciled chunks and embeddings for a specific file.
+        Deletes old chunks and replaces them within a short single-transaction window.
+        """
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            # 1. Upsert source_files row
+            cursor = await conn.execute(
+                """
+                INSERT INTO source_files (source_id, path, blob_sha, last_seen_sync_id, status, updated_at)
+                VALUES (?, ?, ?, ?, 'INDEXED', ?)
+                ON CONFLICT(source_id, path) DO UPDATE SET
+                    blob_sha = excluded.blob_sha,
+                    last_seen_sync_id = excluded.last_seen_sync_id,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                RETURNING id;
+                """,
+                (source_id, file_path, blob_sha, sync_id, now_str),
+            )
+            row = await cursor.fetchone()
+            file_id = row["id"] if row else None
+            if not file_id:
+                async with conn.execute("SELECT id FROM source_files WHERE source_id = ? AND path = ?", (source_id, file_path)) as c2:
+                    r2 = await c2.fetchone()
+                    file_id = r2["id"]
+
+            # 2. Delete old chunks for this file
+            await conn.execute("DELETE FROM knowledge_chunks WHERE source_file_id = ?", (file_id,))
+
+            # 3. Insert new chunks and embeddings
+            for i, c in enumerate(chunks):
+                cur_chunk = await conn.execute(
+                    """
+                    INSERT INTO knowledge_chunks (
+                        source_id, source_file_id, section_title, permalink_url,
+                        content, content_hash, metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        file_id,
+                        c.get("section_title"),
+                        c.get("permalink_url"),
+                        c["content"],
+                        c.get("content_hash", ""),
+                        json.dumps(c.get("metadata", {})),
+                        now_str,
+                    ),
+                )
+                chunk_id = cur_chunk.lastrowid
+                if i < len(embeddings):
+                    model_id, emb_blob = embeddings[i]
+                    await conn.execute(
+                        """
+                        INSERT INTO chunk_embeddings (chunk_id, model_id, embedding_blob)
+                        VALUES (?, ?, ?)
+                        """,
+                        (chunk_id, model_id, emb_blob),
+                    )
+
+            await conn.commit()
+            return file_id
+
+    async def purge_unseen_source_files(self, source_id: int, current_sync_id: int) -> int:
+        """
+        Purge source files (and cascading chunks/FTS) that were not seen in the current sync run.
+        """
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                DELETE FROM source_files
+                WHERE source_id = ? AND (last_seen_sync_id != ? OR last_seen_sync_id IS NULL)
+                """,
+                (source_id, current_sync_id),
+            )
+            purged_count = cursor.rowcount
+            await conn.commit()
+            return purged_count
+
+    async def fts_search_knowledge(
+        self,
+        query_text: str,
+        source_id: Optional[int] = None,
+        limit: int = 15,
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute BM25 lexical search using SQLite FTS5 index.
+        Prioritizes conjunctive AND search, falling back to disjunctive OR search.
+        """
+        clean_q = re.sub(r'[^\w\s_-]', ' ', query_text).strip()
+        if not clean_q:
+            return []
+
+        tokens = clean_q.split()
+        if not tokens:
+            return []
+
+        and_query = " ".join([f'"{t}"*' for t in tokens])
+        or_query = " OR ".join([f'"{t}"*' for t in tokens if len(t) > 1] or [f'"{tokens[0]}"*'])
+
+        async def _execute_fts(conn, fts_q: str):
+            if source_id is not None:
+                sql = """
+                    SELECT kc.*, bm25(knowledge_chunks_fts) as bm25_rank, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    FROM knowledge_chunks_fts fts
+                    JOIN knowledge_chunks kc ON fts.rowid = kc.id
+                    JOIN sources s ON kc.source_id = s.id
+                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    WHERE knowledge_chunks_fts MATCH ? AND kc.source_id = ?
+                    ORDER BY bm25_rank ASC
+                    LIMIT ?
+                """
+                params = (fts_q, source_id, limit)
+            else:
+                sql = """
+                    SELECT kc.*, bm25(knowledge_chunks_fts) as bm25_rank, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    FROM knowledge_chunks_fts fts
+                    JOIN knowledge_chunks kc ON fts.rowid = kc.id
+                    JOIN sources s ON kc.source_id = s.id
+                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    WHERE knowledge_chunks_fts MATCH ?
+                    ORDER BY bm25_rank ASC
+                    LIMIT ?
+                """
+                params = (fts_q, limit)
+
+            async with conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    item = dict(r)
+                    if item.get("metadata_json"):
+                        try:
+                            item["metadata"] = json.loads(item["metadata_json"])
+                        except Exception:
+                            item["metadata"] = {}
+                    else:
+                        item["metadata"] = {}
+                    results.append(item)
+                return results
+
+        async with self.get_connection() as conn:
+            try:
+                return await _execute_fts(conn, and_query)
+            except Exception:
+                # Fallback to OR query only if AND query had syntax error
+                try:
+                    return await _execute_fts(conn, or_query)
+                except Exception:
+                    return []
+
+    async def get_all_chunks_with_embeddings(
+        self,
+        source_id: Optional[int] = None,
+        model_id: str = "bge-small-en-v1.5",
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch all chunks with their pre-computed binary embedding vectors for NumPy cosine search.
+        """
+        async with self.get_connection() as conn:
+            if source_id is not None:
+                sql = """
+                    SELECT kc.*, ce.model_id, ce.embedding_blob, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    FROM knowledge_chunks kc
+                    JOIN chunk_embeddings ce ON kc.id = ce.chunk_id
+                    JOIN sources s ON kc.source_id = s.id
+                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    WHERE ce.model_id = ? AND kc.source_id = ?
+                """
+                params = (model_id, source_id)
+            else:
+                sql = """
+                    SELECT kc.*, ce.model_id, ce.embedding_blob, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    FROM knowledge_chunks kc
+                    JOIN chunk_embeddings ce ON kc.id = ce.chunk_id
+                    JOIN sources s ON kc.source_id = s.id
+                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    WHERE ce.model_id = ?
+                """
+                params = (model_id,)
+
+            async with conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    item = dict(r)
+                    if item.get("metadata_json"):
+                        try:
+                            item["metadata"] = json.loads(item["metadata_json"])
+                        except Exception:
+                            item["metadata"] = {}
+                    else:
+                        item["metadata"] = {}
+                    results.append(item)
+                return results
+
+    async def record_answer_with_evidence(
+        self,
+        query: str,
+        response: str,
+        user_id: Optional[str],
+        evidence_list: List[Dict[str, Any]],
+    ) -> int:
+        """
+        Record a generated answer and persist historical answer evidence snapshots.
+        Evidence snapshots are decoupled from cascades so they survive source/file purges.
+        """
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO answers (query, response, user_id, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (query, response, str(user_id) if user_id else None, now_str),
+            )
+            answer_id = cur.lastrowid
+
+            for ev in evidence_list:
+                await conn.execute(
+                    """
+                    INSERT INTO answer_evidence (answer_id, source_id, source_file_id, citation, raw_text, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        answer_id,
+                        ev.get("source_id"),
+                        ev.get("source_file_id"),
+                        ev.get("citation", "Source"),
+                        ev.get("content", ""),
+                        json.dumps(ev.get("metadata", {})),
+                    ),
+                )
+
+            await conn.commit()
+            return answer_id
+
+    async def get_answer_evidence_snapshots(self, answer_id: int) -> List[Dict[str, Any]]:
+        """Fetch immutable historical evidence snapshots for a given answer ID."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM answer_evidence WHERE answer_id = ?", (answer_id,)) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for r in rows:
+                    item = dict(r)
+                    if item.get("metadata_json"):
+                        try:
+                            item["metadata"] = json.loads(item["metadata_json"])
+                        except Exception:
+                            item["metadata"] = {}
+                    else:
+                        item["metadata"] = {}
+                    results.append(item)
+                return results
+
+    async def log_retrieval_telemetry(
+        self,
+        query: str,
+        top_cosine: List[Dict[str, Any]],
+        bm25_count: int,
+        rrf_results: List[Dict[str, Any]],
+        selected_sources: List[str],
+        context_tokens: int,
+        answer_id: Optional[int] = None,
+        user_feedback: Optional[str] = None,
+    ) -> int:
+        """Persist retrieval telemetry for Phase 2 calibration and evaluation."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO retrieval_logs (
+                    query, top_cosine_json, bm25_hit_count, rrf_results_json,
+                    selected_sources_json, context_token_count, answer_id, user_feedback, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    query,
+                    json.dumps(top_cosine[:5]),
+                    bm25_count,
+                    json.dumps(rrf_results[:5]),
+                    json.dumps(selected_sources),
+                    context_tokens,
+                    answer_id,
+                    user_feedback,
+                    now_str,
+                ),
+            )
+            await conn.commit()
+            return cur.lastrowid
+
+    async def get_knowledge_sources_summary(self) -> List[Dict[str, Any]]:
+        """Fetch dashboard summary of all knowledge sources with chunk and file counts."""
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT 
+                    s.*,
+                    COUNT(DISTINCT sf.id) as actual_files_count,
+                    COUNT(DISTINCT kc.id) as total_chunks_count
+                FROM sources s
+                LEFT JOIN source_files sf ON s.id = sf.source_id
+                LEFT JOIN knowledge_chunks kc ON s.id = kc.source_id
+                GROUP BY s.id
+                ORDER BY s.created_at DESC
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    async def delete_knowledge_source(self, source_ref: str) -> bool:
+        """
+        Delete a knowledge source by reference. Cascades to source_files, knowledge_chunks,
+        FTS5 entries (via triggers), and embeddings, while preserving historical answer_evidence.
+        """
+        async with self.get_connection() as conn:
+            cur = await conn.execute("DELETE FROM sources WHERE source_ref = ?", (source_ref,))
+            await conn.commit()
+            return cur.rowcount > 0
+
+    async def store_quick_note(self, content: str, section_title: str = "Quick Note") -> int:
+        """Store a quick note directly into SQLite NOTES source."""
+        source_id = await self.get_or_create_source("Quick Notes", "NOTES", "local:notes")
+        content_hash = re.sub(r'\s+', ' ', content).strip()
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO knowledge_chunks (source_id, section_title, content, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (source_id, section_title, content, content_hash, now_str),
+            )
+            chunk_id = cur.lastrowid
+            await conn.commit()
+            return chunk_id
 
 
 def classify_fuel_expense(category: str, note: Optional[str]) -> Optional[Dict[str, Any]]:
