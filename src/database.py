@@ -1,10 +1,91 @@
 import os
 import io
+import re
 import csv
 from datetime import date, datetime
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Tuple, Any, AsyncGenerator
+
+
+def normalize_canonical_asset(raw_name: Optional[str]) -> Tuple[str, str]:
+    """
+    Deterministically normalize raw asset text or tickers to a canonical asset name and asset class.
+    Guarantees SQL GROUP BY aggregation integrity across diverse user inputs.
+    Returns: (Canonical Name, Asset Class)
+    """
+    if not raw_name or not raw_name.strip():
+        return ("General Investment", "Unassigned")
+
+    cleaned = raw_name.strip().lower()
+    cleaned_compact = cleaned.replace(" ", "").replace("&", "").replace("-", "").replace(".", "").replace("/", "")
+    tokens = set(re.findall(r"[a-z0-9]+", cleaned))
+
+    # 1. Malaysian Wealth Platforms & Funds (Evaluated first to avoid substring collisions)
+    if "asb" in cleaned_compact or "amanahsaham" in cleaned_compact:
+        return ("ASB (Amanah Saham)", "Fixed Yield")
+
+    if "epf" in cleaned_compact or "kwsp" in cleaned_compact:
+        return ("EPF / KWSP", "Retirement")
+
+    if "tabunghaji" in cleaned_compact or cleaned_compact == "th":
+        return ("Tabung Haji", "Fixed Yield")
+
+    if "versa" in cleaned_compact:
+        return ("Versa Cash", "Money Market")
+
+    if "stashaway" in cleaned_compact:
+        return ("StashAway", "Robo-Advisor")
+
+    if "wahed" in cleaned_compact:
+        return ("Wahed Invest", "Robo-Advisor")
+
+    if "kdi" in cleaned_compact or "kenanga" in cleaned_compact:
+        return ("KDI (Kenanga Digital)", "Robo-Advisor")
+
+    # 2. US & Global Equities
+    sp500_exact = {"voo", "spy", "ivv", "sp500", "snp500", "snp", "spx", "standardandpoors", "sandp500", "sandp"}
+    if cleaned_compact in sp500_exact or tokens.intersection(sp500_exact) or "s&p" in cleaned or "snp" in cleaned or "sp 500" in cleaned or "sp500" in cleaned_compact:
+        return ("S&P 500", "US Equities")
+
+    nasdaq_exact = {"qqq", "nasdaq", "nasdaq100", "ndx", "qqqm"}
+    if cleaned_compact in nasdaq_exact or tokens.intersection(nasdaq_exact) or "nasdaq" in cleaned:
+        return ("Nasdaq 100", "US Equities")
+
+    all_world_exact = {"vwra", "vt", "allworld", "msciworld", "iwda", "urth"}
+    if cleaned_compact in all_world_exact or tokens.intersection(all_world_exact) or "world etf" in cleaned:
+        return ("All-World ETF", "Global Equities")
+
+    # 3. Crypto & Digital Assets
+    btc_exact = {"btc", "bitcoin", "sats", "satoshi", "satoshis"}
+    if cleaned_compact in btc_exact or tokens.intersection(btc_exact) or "bitcoin" in cleaned or "satoshi" in cleaned:
+        return ("Bitcoin (BTC)", "Crypto")
+
+    eth_exact = {"eth", "ethereum", "ether"}
+    if cleaned_compact in eth_exact or tokens.intersection(eth_exact) or "ethereum" in cleaned:
+        return ("Ethereum (ETH)", "Crypto")
+
+    sol_exact = {"sol", "solana"}
+    if cleaned_compact in sol_exact or tokens.intersection(sol_exact) or "solana" in cleaned:
+        return ("Solana (SOL)", "Crypto")
+
+    if "luno" in cleaned_compact or "crypto" in cleaned or "usdt" in cleaned or "usdc" in cleaned:
+        return ("Crypto Portfolio", "Crypto")
+
+    # 4. Commodities
+    if "gold" in cleaned or "emas" in cleaned or "xau" in cleaned_compact:
+        return ("Gold", "Commodities")
+
+    if "silver" in cleaned or "perak" in cleaned or "xag" in cleaned_compact:
+        return ("Silver", "Commodities")
+
+    # 5. Malaysian Equities / Stocks
+    bursa_keywords = {"bursa", "maybank", "tenaga", "public bank", "cimb", "pbbank", "topglove", "hartalega", "ihh", "yinson", "genting"}
+    if any(k in cleaned for k in bursa_keywords):
+        return (raw_name.strip().title(), "Malaysian Equities")
+
+    # Fallback to clean title
+    return (raw_name.strip().title(), "Equities & Assets")
 
 
 class DatabaseManager:
@@ -103,6 +184,16 @@ class DatabaseManager:
                 if "phase_order" not in columns:
                     await conn.execute("ALTER TABLE tasks ADD COLUMN phase_order INTEGER DEFAULT 1;")
 
+            # Auto-migration for expenses table columns (Canonical Wealth & Investments)
+            async with conn.execute("PRAGMA table_info(expenses);") as cursor:
+                exp_cols = [row["name"] for row in await cursor.fetchall()]
+                if "asset_name" not in exp_cols:
+                    await conn.execute("ALTER TABLE expenses ADD COLUMN asset_name TEXT;")
+                if "asset_class" not in exp_cols:
+                    await conn.execute("ALTER TABLE expenses ADD COLUMN asset_class TEXT;")
+                if "recurring_bill_id" not in exp_cols:
+                    await conn.execute("ALTER TABLE expenses ADD COLUMN recurring_bill_id INTEGER;")
+
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);"
             )
@@ -112,9 +203,12 @@ class DatabaseManager:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses(created_at);"
             )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_expenses_asset ON expenses(asset_name);"
+            )
             await conn.commit()
 
-    # --- EXPENSES ---
+    # --- EXPENSES & WEALTH LOGGING ---
 
     async def insert_expense(
         self,
@@ -122,15 +216,26 @@ class DatabaseManager:
         category: str,
         note: Optional[str],
         created_at: str,
+        asset_name: Optional[str] = None,
+        asset_class: Optional[str] = None,
+        recurring_bill_id: Optional[int] = None,
     ) -> int:
-        """Insert an expense record and return its primary key ID."""
+        """
+        Insert an expense or wealth investment record and return its primary key ID.
+        Automatically normalizes canonical asset names for Investments & Savings.
+        """
+        if category == "Investments & Savings" or asset_name:
+            c_name, c_class = normalize_canonical_asset(asset_name or note)
+            asset_name = c_name
+            asset_class = asset_class or c_class
+
         async with self.get_connection() as conn:
             cursor = await conn.execute(
                 """
-                INSERT INTO expenses (amount, category, note, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO expenses (amount, category, note, created_at, asset_name, asset_class, recurring_bill_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (round(amount, 2), category, note, created_at),
+                (round(amount, 2), category, note, created_at, asset_name, asset_class, recurring_bill_id),
             )
             await conn.commit()
             return cursor.lastrowid
@@ -836,7 +941,8 @@ class DatabaseManager:
     async def get_safe_daily_allowance(self, now_dt: datetime) -> Dict[str, Any]:
         """
         Calculate remaining days in current month and compute Safe-to-Spend daily allowance.
-        Safeguards:
+        Guarantees:
+        - Excludes 'Investments & Savings' from consumptive spend so capital deployments never pollute runway.
         - Days left includes today: (last_day - current_day) + 1, so days_remaining is never 0.
         - Negative remaining budget returns allowance 0.0 with explicit overspent_by amount.
         """
@@ -850,13 +956,13 @@ class DatabaseManager:
         days_remaining = max((total_days - current_day) + 1, 1)
 
         budgets = await self.get_budgets()
-        total_budget = sum(budgets.values())
+        total_budget = sum(limit for cat, limit in budgets.items() if cat != "Investments & Savings")
 
         async with self.get_connection() as conn:
             async with conn.execute(
                 """
                 SELECT SUM(amount) as total_spent FROM expenses
-                WHERE substr(created_at, 1, 7) = ?
+                WHERE substr(created_at, 1, 7) = ? AND category != 'Investments & Savings'
                 """,
                 (month_str,),
             ) as cur:
@@ -897,6 +1003,196 @@ class DatabaseManager:
             "safe_daily_allowance": safe_daily_allowance,
             "is_overspent": False,
         }
+
+    # --- WEALTH & INVESTMENT TRACKING ENGINE ---
+
+    async def get_investments_summary(
+        self,
+        start_date_str: Optional[str] = None,
+        end_date_str: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch itemized investments, total capital deployed, and canonical asset grouping.
+        """
+        async with self.get_connection() as conn:
+            if start_date_str and end_date_str:
+                query = """
+                    SELECT * FROM expenses
+                    WHERE category = 'Investments & Savings' AND substr(created_at, 1, 10) BETWEEN ? AND ?
+                    ORDER BY created_at DESC
+                """
+                params = (start_date_str, end_date_str)
+            elif start_date_str:
+                query = """
+                    SELECT * FROM expenses
+                    WHERE category = 'Investments & Savings' AND substr(created_at, 1, 10) >= ?
+                    ORDER BY created_at DESC
+                """
+                params = (start_date_str,)
+            else:
+                query = """
+                    SELECT * FROM expenses
+                    WHERE category = 'Investments & Savings'
+                    ORDER BY created_at DESC
+                """
+                params = ()
+
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                investments = [dict(r) for r in rows]
+
+        total_invested = round(sum(inv["amount"] for inv in investments), 2)
+
+        asset_map: Dict[str, Dict[str, Any]] = {}
+        class_map: Dict[str, float] = {}
+
+        for inv in investments:
+            raw_asset = inv.get("asset_name") or inv.get("note")
+            canonical_name, canonical_class = normalize_canonical_asset(raw_asset)
+            
+            if canonical_name not in asset_map:
+                asset_map[canonical_name] = {
+                    "asset_name": canonical_name,
+                    "asset_class": canonical_class,
+                    "total_amount": 0.0,
+                    "count": 0,
+                }
+            asset_map[canonical_name]["total_amount"] = round(asset_map[canonical_name]["total_amount"] + inv["amount"], 2)
+            asset_map[canonical_name]["count"] += 1
+
+            class_map[canonical_class] = round(class_map.get(canonical_class, 0.0) + inv["amount"], 2)
+
+        asset_breakdown = []
+        for item in sorted(asset_map.values(), key=lambda x: x["total_amount"], reverse=True):
+            pct = round((item["total_amount"] / total_invested * 100), 1) if total_invested > 0 else 0.0
+            item["percentage"] = pct
+            asset_breakdown.append(item)
+
+        class_breakdown = []
+        for c_name, c_amt in sorted(class_map.items(), key=lambda x: x[1], reverse=True):
+            c_pct = round((c_amt / total_invested * 100), 1) if total_invested > 0 else 0.0
+            class_breakdown.append({"asset_class": c_name, "total_amount": c_amt, "percentage": c_pct})
+
+        return {
+            "total_invested": total_invested,
+            "asset_breakdown": asset_breakdown,
+            "class_breakdown": class_breakdown,
+            "investments": investments,
+            "count": len(investments),
+        }
+
+    async def get_dca_progress(self, year_month_str: str) -> List[Dict[str, Any]]:
+        """
+        Compare active recurring investment commitments against actual logged investments in that calendar month.
+        Deterministically matches via foreign key recurring_bill_id or canonical asset name.
+        """
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT * FROM recurring_bills
+                WHERE is_active = 1 AND category = 'Investments & Savings'
+                ORDER BY day_of_month ASC
+                """
+            ) as cur:
+                bills = [dict(r) for r in await cur.fetchall()]
+
+            if not bills:
+                return []
+
+            async with conn.execute(
+                """
+                SELECT * FROM expenses
+                WHERE category = 'Investments & Savings' AND substr(created_at, 1, 7) = ?
+                """,
+                (year_month_str,),
+            ) as cur:
+                month_investments = [dict(r) for r in await cur.fetchall()]
+
+        progress_list = []
+        for bill in bills:
+            c_name, _ = normalize_canonical_asset(bill["name"])
+            target = bill["amount"]
+            due_day = bill["day_of_month"]
+
+            matched_investments = [
+                inv for inv in month_investments
+                if inv.get("recurring_bill_id") == bill["id"] or (normalize_canonical_asset(inv.get("asset_name") or inv.get("note"))[0] == c_name)
+            ]
+            invested_amount = round(sum(inv["amount"] for inv in matched_investments), 2)
+            pct = round((invested_amount / target) * 100, 1) if target > 0 else 0.0
+            is_fulfilled = (invested_amount >= target)
+
+            streak = await self.get_bill_dca_streak(bill["id"], c_name, year_month_str)
+
+            progress_list.append(
+                {
+                    "bill_id": bill["id"],
+                    "name": bill["name"],
+                    "canonical_name": c_name,
+                    "target_amount": target,
+                    "invested_amount": invested_amount,
+                    "percentage": pct,
+                    "is_fulfilled": is_fulfilled,
+                    "due_day": due_day,
+                    "streak_months": streak,
+                    "logs_count": len(matched_investments),
+                }
+            )
+
+        return progress_list
+
+    async def get_bill_dca_streak(self, bill_id: int, canonical_asset_name: str, current_month_str: str) -> int:
+        """
+        Calculate consecutive months streak of meeting the DCA investment target leading up to current or previous month.
+        """
+        from datetime import datetime, timedelta
+
+        async with self.get_connection() as conn:
+            bill = await self.get_recurring_bill_by_id(bill_id)
+            if not bill:
+                return 0
+            target = bill["amount"]
+
+            async with conn.execute(
+                """
+                SELECT substr(created_at, 1, 7) as ym, SUM(amount) as month_total
+                FROM expenses
+                WHERE category = 'Investments & Savings' 
+                  AND (recurring_bill_id = ? OR asset_name = ? OR note LIKE ?)
+                GROUP BY ym
+                ORDER BY ym DESC
+                """,
+                (bill_id, canonical_asset_name, f"%{canonical_asset_name}%"),
+            ) as cur:
+                rows = await cur.fetchall()
+                month_totals = {r["ym"]: r["month_total"] for r in rows}
+
+        cur_dt = datetime.strptime(f"{current_month_str}-01", "%Y-%m-%d").date()
+        
+        streak = 0
+        check_dt = cur_dt
+        cur_ym = check_dt.strftime("%Y-%m")
+        if month_totals.get(cur_ym, 0.0) >= target:
+            streak += 1
+            check_dt = (check_dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+        else:
+            check_dt = (check_dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+
+        while True:
+            ym = check_dt.strftime("%Y-%m")
+            if month_totals.get(ym, 0.0) >= target:
+                streak += 1
+                check_dt = (check_dt.replace(day=1) - timedelta(days=1)).replace(day=1)
+            else:
+                break
+
+        return streak
+
+    async def get_cumulative_investments_by_asset(self) -> Dict[str, Any]:
+        """
+        Calculate all-time cumulative capital deployed per asset, portfolio total, and asset classes.
+        """
+        return await self.get_investments_summary()
 
     async def get_category_proportions(
         self, start_date_str: Optional[str] = None, end_date_str: Optional[str] = None

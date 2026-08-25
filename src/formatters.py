@@ -66,19 +66,37 @@ def format_action_preview(
         color=discord.Color.gold(),
     )
 
-    # 1. Expenses Preview
+    # 1. Expenses & Wealth Investments Preview
     if expenses:
-        total = sum(e["amount"] for e in expenses)
-        lines = []
-        for exp in expenses:
-            note_str = f" ({exp['note']})" if exp.get("note") else ""
-            date_str = f" `[Date: {exp['occurred_date']}]`" if exp.get("occurred_date") else ""
-            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}{date_str}")
-        embed.add_field(
-            name=f"💸 Expenses to Log (Total: RM {total:.2f})",
-            value="\n".join(lines),
-            inline=False,
-        )
+        living_exps = [e for e in expenses if e.get("category") != "Investments & Savings"]
+        invest_exps = [e for e in expenses if e.get("category") == "Investments & Savings"]
+
+        if living_exps:
+            total_living = sum(e["amount"] for e in living_exps)
+            lines = []
+            for exp in living_exps:
+                note_str = f" ({exp['note']})" if exp.get("note") else ""
+                date_str = f" `[Date: {exp['occurred_date']}]`" if exp.get("occurred_date") else ""
+                lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}{date_str}")
+            embed.add_field(
+                name=f"💸 Living Expenses to Log (Total: RM {total_living:.2f})",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        if invest_exps:
+            total_invest = sum(e["amount"] for e in invest_exps)
+            lines = []
+            for exp in invest_exps:
+                asset_label = exp.get("asset_name") or exp.get("note") or "Investment"
+                date_str = f" `[Date: {exp['occurred_date']}]`" if exp.get("occurred_date") else ""
+                link_str = f" _(Linked to DCA Bill #{exp['investment_bill_id']})_" if exp.get("investment_bill_id") else ""
+                lines.append(f"• 💎 **RM {exp['amount']:.2f}** — `{asset_label}`{date_str}{link_str}")
+            embed.add_field(
+                name=f"💎 Wealth & Capital to Deploy (Total: RM {total_invest:.2f})",
+                value="\n".join(lines) + "\n_(Asset accumulation — does NOT deduct from living expense runway)_",
+                inline=False,
+            )
 
     # 2. Tasks Preview (Single or Multi-phase)
     if tasks:
@@ -169,6 +187,7 @@ def format_action_confirmation(
     budget_alerts: Optional[List[str]] = None,
     streak_info: Optional[Dict[str, Any]] = None,
     goal_update_info: Optional[Dict[str, Any]] = None,
+    dca_impact_info: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build a rich confirmation embed for logged actions with hierarchy, budget alerts, and streak badge."""
     is_breach = bool(budget_alerts and any("exceeded" in a.lower() or "🚨" in a for a in budget_alerts))
@@ -179,19 +198,39 @@ def format_action_confirmation(
         color=color,
     )
 
-    # 1. Logged Expenses
+    # 1. Logged Expenses & Wealth Investments
     if inserted_expenses:
-        total = sum(e["amount"] for e in inserted_expenses)
-        lines = []
-        for exp in inserted_expenses:
-            note_str = f" ({exp['note']})" if exp.get("note") else ""
-            date_str = f" `[Date: {exp['created_at'][:10]}]`" if exp.get("created_at") else ""
-            lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}{date_str}")
-        embed.add_field(
-            name=f"💸 Logged Expenses (Total: RM {total:.2f})",
-            value="\n".join(lines),
-            inline=False,
-        )
+        living_exps = [e for e in inserted_expenses if e.get("category") != "Investments & Savings"]
+        invest_exps = [e for e in inserted_expenses if e.get("category") == "Investments & Savings"]
+
+        if living_exps:
+            total_living = sum(e["amount"] for e in living_exps)
+            lines = []
+            for exp in living_exps:
+                note_str = f" ({exp['note']})" if exp.get("note") else ""
+                date_str = f" `[Date: {exp['created_at'][:10]}]`" if exp.get("created_at") else ""
+                lines.append(f"• **RM {exp['amount']:.2f}** — `{exp['category']}`{note_str}{date_str}")
+            embed.add_field(
+                name=f"💸 Logged Expenses (Total: RM {total_living:.2f})",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        if invest_exps:
+            total_invest = sum(e["amount"] for e in invest_exps)
+            lines = []
+            for exp in invest_exps:
+                asset_label = exp.get("asset_name") or exp.get("note") or "Investment"
+                date_str = f" `[Date: {exp['created_at'][:10]}]`" if exp.get("created_at") else ""
+                lines.append(f"• 💎 **RM {exp['amount']:.2f}** — `{asset_label}`{date_str}")
+            dca_note = ""
+            if dca_impact_info:
+                dca_note = f"\n_DCA Progress: {dca_impact_info.get('status_line', '')}_"
+            embed.add_field(
+                name=f"💎 Capital Deployed (Total: RM {total_invest:.2f})",
+                value="\n".join(lines) + dca_note,
+                inline=False,
+            )
 
     # 2. Budget Alerts (Breach or Warning)
     if budget_alerts:
@@ -512,6 +551,8 @@ def format_live_dashboard(
     date_str: str,
     active_goals: Optional[List[Dict[str, Any]]] = None,
     rank_info: Optional[Dict[str, Any]] = None,
+    dca_progress: Optional[List[Dict[str, Any]]] = None,
+    total_invested_month: float = 0.0,
 ) -> discord.Embed:
     """Build the single-pane-of-glass Live Dashboard with 1-tap in-place refresh."""
     rank_badge = f" | {rank_info['title']}" if rank_info else ""
@@ -521,14 +562,14 @@ def format_live_dashboard(
         color=discord.Color.dark_teal(),
     )
 
-    # 1. Spending & 7-Day Sparkline
+    # 1. Spending & 7-Day Sparkline (Consumptive Living Burn)
     sparkline = render_sparkline(pace_data.get("daily_series", []))
     avg = pace_data.get("seven_day_avg", 0.0)
     diff = pace_data.get("diff_pct", 0.0)
     sign = "+" if diff > 0 else ""
     indicator = "🔴" if diff > 15.0 else ("🟢" if diff < -15.0 else "🟡")
     embed.add_field(
-        name=f"💸 Today's Spending: RM {today_spent:.2f}",
+        name=f"💸 Today's Living Spend: RM {today_spent:.2f}",
         value=f"7-Day Avg: **RM {avg:.2f}** ({sign}{diff}% {indicator})\nTrend: {sparkline}",
         inline=False,
     )
@@ -545,7 +586,26 @@ def format_live_dashboard(
             allow_str = f"**RM {allow:.2f} / day** _(RM {rem:.2f} buffer across {days} days)_"
         embed.add_field(name="💡 Safe-to-Spend Runway", value=allow_str, inline=False)
 
-    # 3. Savings Goals
+    # 3. Dedicated Wealth & DCA Progress (Asset Building)
+    if dca_progress:
+        d_lines = []
+        for d in dca_progress[:3]:
+            bar = render_progress_bar(d["invested_amount"], d["target_amount"])
+            status_tag = "✅ Met" if d["is_fulfilled"] else f"⏳ {d['due_day']}th"
+            d_lines.append(f"• **{d['name']}** ({status_tag}):\n  {bar}")
+        embed.add_field(
+            name=f"💎 Wealth & DCA (RM {total_invested_month:.2f} Deployed)",
+            value="\n".join(d_lines),
+            inline=False,
+        )
+    elif total_invested_month > 0:
+        embed.add_field(
+            name="💎 Wealth & Investments",
+            value=f"• Total Capital Deployed: **RM {total_invested_month:.2f}** this month.",
+            inline=False,
+        )
+
+    # 4. Savings Goals
     if active_goals:
         g_lines = []
         for g in active_goals[:3]:
@@ -553,15 +613,15 @@ def format_live_dashboard(
             g_lines.append(f"• **{g['name']}:** {bar}")
         embed.add_field(name="🎯 Savings Goals", value="\n".join(g_lines), inline=False)
 
-    # 4. Monthly Budgets
+    # 5. Monthly Budgets
     if budget_status:
         b_lines = []
         for b in budget_status[:4]:
             bar = render_progress_bar(b["spent"], b["limit"])
             b_lines.append(f"• **{b['category']}:** {bar}")
-        embed.add_field(name="📊 Budget Health", value="\n".join(b_lines), inline=False)
+        embed.add_field(name="📊 Living Budget Health", value="\n".join(b_lines), inline=False)
 
-    # 5. Top Priority Tasks
+    # 6. Top Priority Tasks
     if open_tasks:
         lines = []
         for t in open_tasks[:5]:
@@ -571,7 +631,7 @@ def format_live_dashboard(
     else:
         embed.add_field(name="📋 Tasks", value="🎉 All tasks completed!", inline=False)
 
-    # 6. Bills (Due Today or Next 3 Days)
+    # 7. Bills (Due Today or Next 3 Days)
     all_bills = due_bills + upcoming_bills
     if all_bills:
         bill_lines = []
@@ -588,6 +648,65 @@ def format_live_dashboard(
     return embed
 
 
+def format_investments_overview(
+    investments_summary: Dict[str, Any],
+    dca_progress: List[Dict[str, Any]],
+    month_str: str,
+) -> discord.Embed:
+    """Build dedicated Wealth & Investment tracking overview embed."""
+    total_invested = investments_summary.get("total_invested", 0.0)
+    asset_breakdown = investments_summary.get("asset_breakdown", [])
+    class_breakdown = investments_summary.get("class_breakdown", [])
+
+    embed = discord.Embed(
+        title=f"💎 Wealth & Investment Center — {month_str}",
+        description="Dedicated asset building & DCA tracker. Investments are isolated and never deduct from your living expense allowance!",
+        color=discord.Color.teal(),
+    )
+
+    # 1. Total Capital Deployed
+    embed.add_field(
+        name=f"💰 Capital Deployed This Month: RM {total_invested:.2f}",
+        value=f"Total transactions logged: **{investments_summary.get('count', 0)}**",
+        inline=False,
+    )
+
+    # 2. Monthly DCA Commitments Checklist
+    if dca_progress:
+        dca_lines = []
+        for d in dca_progress:
+            bar = render_progress_bar(d["invested_amount"], d["target_amount"])
+            status_tag = "✅ Met" if d["is_fulfilled"] else f"⏳ Due on {d['due_day']}th"
+            streak_str = f" | 🔥 {d['streak_months']}-mo streak" if d["streak_months"] > 0 else ""
+            dca_lines.append(
+                f"• **[Bill #{d['bill_id']}] {d['name']}** ({status_tag}{streak_str}):\n"
+                f"  {bar}"
+            )
+        embed.add_field(
+            name=f"📈 Monthly DCA Discipline Checklist ({len(dca_progress)})",
+            value="\n".join(dca_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📈 Monthly DCA Commitments",
+            value="No recurring investment commitments set. Create one by typing e.g. *'recurring buy $100 s&p500 on the 27th'*!",
+            inline=False,
+        )
+
+    # 3. Asset Allocation Breakdown
+    if asset_breakdown:
+        lines = [f"• **{a['asset_name']}** ({a['asset_class']}): **RM {a['total_amount']:.2f}** ({a['percentage']}%)" for a in asset_breakdown[:6]]
+        embed.add_field(
+            name="📊 Asset Allocation Breakdown",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    embed.set_footer(text="Consistency is the mother of compounding. Keep dollar-cost averaging!")
+    return embed
+
+
 def format_goals_overview(goals: List[Dict[str, Any]]) -> discord.Embed:
     """Build dedicated Savings Goals overview embed."""
     embed = discord.Embed(
@@ -598,6 +717,16 @@ def format_goals_overview(goals: List[Dict[str, Any]]) -> discord.Embed:
     if not goals:
         embed.description = "No active savings goals found. Create one by saying e.g. *'Create goal Japan Trip target RM 6000'*!"
         return embed
+
+    for g in goals:
+        bar = render_progress_bar(g["current_amount"], g["target_amount"])
+        target_d = f" | Target Date: `{g['target_date']}`" if g.get("target_date") else ""
+        embed.add_field(
+            name=f"🏆 [ID: #{g['id']}] {g['name']}{target_d}",
+            value=f"{bar}\nRemaining: **RM {g['remaining']:.2f}**\n",
+            inline=False,
+        )
+    return embed
 
     for g in goals:
         bar = render_progress_bar(g["current_amount"], g["target_amount"])
@@ -688,6 +817,8 @@ def generate_html_report(
     goals: List[Dict[str, Any]],
     streak_info: Dict[str, Any],
     rank_info: Dict[str, Any],
+    investments_summary: Optional[Dict[str, Any]] = None,
+    dca_progress: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Generate a responsive, standalone dark-mode HTML executive report."""
     prop_rows = "".join(
@@ -710,6 +841,21 @@ def generate_html_report(
             for g in goals
         ]
     ) or "<tr><td colspan='4'>No active savings goals.</td></tr>"
+
+    total_invested = investments_summary.get("total_invested", 0.0) if investments_summary else 0.0
+    dca_rows = "".join(
+        [
+            f"<tr><td>{d['name']}</td><td>RM {d['invested_amount']:.2f}</td><td>RM {d['target_amount']:.2f}</td><td>{d['percentage']}% ({'✅ Met' if d['is_fulfilled'] else '⏳ Pending'})</td></tr>"
+            for d in (dca_progress or [])
+        ]
+    ) or "<tr><td colspan='4'>No recurring DCA commitments.</td></tr>"
+
+    asset_rows = "".join(
+        [
+            f"<tr><td>{a['asset_name']}</td><td>{a['asset_class']}</td><td>RM {a['total_amount']:.2f}</td><td>{a['percentage']}%</td></tr>"
+            for a in (investments_summary.get("asset_breakdown", []) if investments_summary else [])
+        ]
+    ) or "<tr><td colspan='4'>No investments logged this period.</td></tr>"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -734,7 +880,7 @@ def generate_html_report(
         }}
         .card-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }}
@@ -746,7 +892,7 @@ def generate_html_report(
             text-align: center;
         }}
         .card-val {{
-            font-size: 26px;
+            font-size: 24px;
             font-weight: bold;
             color: #58a6ff;
             margin-top: 10px;
@@ -794,8 +940,12 @@ def generate_html_report(
 
         <div class="card-grid">
             <div class="card">
-                <div>Total Spent</div>
+                <div>Living Spend</div>
                 <div class="card-val">RM {total_spent:.2f}</div>
+            </div>
+            <div class="card">
+                <div>Capital Invested</div>
+                <div class="card-val" style="color: #2ea043;">💎 RM {total_invested:.2f}</div>
             </div>
             <div class="card">
                 <div>Logging Streak</div>
@@ -811,7 +961,19 @@ def generate_html_report(
             </div>
         </div>
 
-        <h2>💸 Spending by Category</h2>
+        <h2>💎 Wealth & Monthly DCA Progress</h2>
+        <table>
+            <thead><tr><th>DCA Commitment</th><th>Invested</th><th>Target</th><th>Status</th></tr></thead>
+            <tbody>{dca_rows}</tbody>
+        </table>
+
+        <h2>📊 Asset Allocation Breakdown</h2>
+        <table>
+            <thead><tr><th>Asset Name</th><th>Asset Class</th><th>Total Deployed</th><th>Share</th></tr></thead>
+            <tbody>{asset_rows}</tbody>
+        </table>
+
+        <h2>💸 Living Spending by Category</h2>
         <table>
             <thead><tr><th>Category</th><th>Total Amount</th><th>Share</th></tr></thead>
             <tbody>{prop_rows}</tbody>

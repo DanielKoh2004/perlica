@@ -81,11 +81,19 @@ class ExpenseItem(BaseModel):
     )
     note: Optional[str] = Field(
         default=None,
-        description="Brief context or item description (e.g. 'Chicken rice lunch', 'Grab ride').",
+        description="Brief context or item description (e.g. 'Chicken rice lunch', 'S&P 500 DCA').",
     )
     occurred_date: Optional[str] = Field(
         default=None,
         description="Date in YYYY-MM-DD format if the expense occurred on a specific date (e.g. yesterday). Otherwise None.",
+    )
+    asset_name: Optional[str] = Field(
+        default=None,
+        description="Canonical asset name if this is an investment (e.g. 'S&P 500', 'Bitcoin (BTC)', 'Versa Cash', 'StashAway', 'Gold').",
+    )
+    investment_bill_id: Optional[int] = Field(
+        default=None,
+        description="Exact integer Bill ID from ACTIVE RECURRING BILLS IN DATABASE if this investment matches an active recurring investment commitment. If ambiguous or unlinked, keep None.",
     )
 
 
@@ -98,28 +106,28 @@ class TaskPriority(str, Enum):
 class TaskItem(BaseModel):
     description: str = Field(
         ...,
-        description="Clear, actionable task or parent project title.",
+        description="Clear, actionable task description. Strip filler words like 'I need to', 'Remind me to'.",
     )
     priority: TaskPriority = Field(
         default=TaskPriority.MEDIUM,
-        description="Priority level: LOW, MEDIUM, or HIGH.",
+        description="Task priority. Default to MEDIUM unless urgency or importance is stated.",
     )
     due_date: Optional[str] = Field(
         default=None,
-        description="Due date in YYYY-MM-DD format calculated strictly from local reference frame. Otherwise None.",
+        description="Due date in YYYY-MM-DD format if mentioned. Resolve relative dates (e.g. 'tomorrow', 'next Monday') using the LOCAL TIME REFERENCE.",
     )
     due_time: Optional[str] = Field(
         default=None,
-        description="Due time in HH:MM (24-hour) format if mentioned (e.g. '17:00' for 5pm). Otherwise None.",
+        description="Due time in HH:MM format (24-hour) if mentioned (e.g. '5pm' -> '17:00').",
     )
     phases: List[str] = Field(
         default_factory=list,
-        description="List of sub-tasks or phases if the user specified a multi-step task (e.g. ['Phase 1: Wireframes', 'Phase 2: UI Design', 'Phase 3: Testing']).",
+        description="Ordered sub-tasks or milestone phases if this is a complex project (e.g. ['Phase 1: Wireframes', 'Phase 2: Code', 'Phase 3: Deploy']).",
     )
 
 
 class QueryScope(BaseModel):
-    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "BUDGETS", "BILLS", "GENERAL"] = Field(
+    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "BUDGETS", "BILLS", "GOALS", "INVESTMENTS", "GENERAL"] = Field(
         ...,
         description="Target dataset or intent to view/analyze.",
     )
@@ -325,7 +333,8 @@ def build_system_prompt(
     if recurring_bills:
         b_lines = []
         for b in recurring_bills:
-            b_lines.append(f"- [Bill ID: {b['id']}] {b['name']}: RM {b['amount']:.2f} (Category: {b['category']}) on the {b['day_of_month']}th")
+            tag = " [Recurring DCA Investment]" if b.get("category") == "Investments & Savings" else ""
+            b_lines.append(f"- [Bill ID: {b['id']}] {b['name']}: RM {b['amount']:.2f} (Category: {b['category']}) on the {b['day_of_month']}th{tag}")
         bills_formatted = "\n".join(b_lines)
     else:
         bills_formatted = "No active recurring bills."
@@ -338,7 +347,7 @@ def build_system_prompt(
     else:
         goals_formatted = "No active savings goals."
 
-    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, budgets, recurring bills, dedicated savings goals, and giving smart advice.
+    return f"""You are Perlica, an intelligent, zero-friction Discord personal assistant tracking expenses, multi-phase tasks, budgets, recurring bills, dedicated savings goals, wealth accumulation / DCA investments, and giving smart advice.
 
 LOCAL TIME REFERENCE:
 - Current Local Timestamp: {now_local.strftime('%Y-%m-%d %H:%M:%S')}
@@ -349,7 +358,7 @@ LOCAL TIME REFERENCE:
 ACTIVE OPEN TASKS IN DATABASE:
 {tasks_formatted}
 
-ACTIVE RECURRING BILLS IN DATABASE:
+ACTIVE RECURRING BILLS & INVESTMENTS IN DATABASE:
 {bills_formatted}
 
 ACTIVE SAVINGS GOALS IN DATABASE:
@@ -362,7 +371,7 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - **Groceries**: 99 Speedmart, Speedmart, Lotus's, Jaya Grocer, Village Grocer, Aeon, Econsave, Mydin, NSK, Pasar Malam, Wet Market.
    - **Utilities & Bills**: TNB (electricity), Air Selangor / Syabas (water), Indah Water (IWK), Astro, Unifi, TIME, Maxis, CelcomDigi, U Mobile, prepaid/postpaid phone reload.
    - **Entertainment**: In-game top-ups, monthly cards & passes (e.g. Endfield / Arknights Endfield, Arknights, Genshin Welkin, HSR Express Pass, ZZZ, Wuthering Waves, Blue Archive, Nikke, FGO, MLBB diamonds, Valorant Points, Roblox Robux, Battle Pass, Season Pass), Gaming stores & platforms (Codashop, UniPin, Razer Gold, Steam, PlayStation PSN, Nintendo eShop, Epic Games), Subscriptions (Discord Nitro, Spotify, Netflix, YouTube Premium, Disney+, cinema tickets, board games).
-   - **Investments & Savings**: S&P 500 / S&P500 / SNP 500, ETFs, Stocks, Mutual Funds, Crypto, Bitcoin, ETH, ASB, EPF / KWSP, Tabung Haji, Gold, StashAway, Versa, Wahed, Luno, monthly DCA / recurring investment buys.
+   - **Investments & Savings**: S&P 500 / S&P500 / SNP 500, VOO, SPY, IVV, QQQ, Nasdaq, ETFs, Stocks, Bursa Malaysia, Crypto, Bitcoin / BTC, Ethereum / ETH, Solana / SOL, ASB, EPF / KWSP, Tabung Haji, Gold, StashAway, Versa, Wahed, Luno, monthly DCA / recurring investment buys.
    - **Shopping**: Shopee, Lazada, TikTok Shop, Taobao, MR DIY, Uniqlo, Retail stores, Gadgets, Clothes, Physical goods.
    - **Health & Personal**: Medical/Doctor/Clinic/Klinik/Hospital, Pharmacy (Watsons, Guardian, Caring, Big Pharmacy), Vitamins/Supplements, Skincare, Haircut, Grooming, Gym membership. (Note: In-game passes or monthly cards are NEVER Health & Personal).
 
@@ -406,7 +415,8 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
 
 10. ON-DEMAND SUMMARIES & RECAPS:
    - "summarize today", "recap my day", "summary of this week": query with query_target='SUMMARY' and timeframe.
-   - "goals", "my savings goals", "show goals": query with query_target='GENERAL' or specific_question='Show savings goals'.
+   - "goals", "my savings goals", "show goals": query with query_target='GOALS'.
+   - "investments", "my investments", "wealth", "portfolio", "dca status": query with query_target='INVESTMENTS'.
 
 11. TASK COMPLETIONS:
    - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID.
@@ -418,6 +428,14 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - If the user mentions "yesterday", "2 days ago", "on Monday", "on 24 Aug", or any specific date when logging an expense:
      Always set `occurred_date` in YYYY-MM-DD on the ExpenseItem using the exact date from LOCAL TIME REFERENCE (e.g. if today is 2026-08-25, "yesterday" is "2026-08-24").
      Example: "spent rm8 on lunch yesterday" -> ExpenseItem(amount=8.0, category=ExpenseCategory.FOOD, note="lunch", occurred_date="2026-08-24")
+
+14. WEALTH ACCUMULATION & DCA INVESTMENTS:
+   - Any buy, purchase, deposit, or DCA into equities, ETFs, crypto, unit trusts, gold, or robo-advisors must have category=ExpenseCategory.INVESTMENT.
+   - Set `asset_name` to the canonical name (e.g. 'S&P 500', 'Bitcoin (BTC)', 'Versa Cash', 'StashAway', 'Gold').
+   - Matching Recurring Investment Commitments:
+     - If user explicitly mentions the asset (e.g. "bought $100 s&p500", "dca 450 into voo", "deposited 500 in stashaway"), match to the exact `[Bill ID: X]` in ACTIVE RECURRING BILLS & INVESTMENTS and set `investment_bill_id=X`.
+     - If user says generic "invested RM 300 today" and multiple recurring investments exist: DO NOT guess `investment_bill_id`. Keep `investment_bill_id=None`.
+     - If exactly 1 recurring investment exists in the entire database, generic "invested 100" can link to that single bill.
 """
 
 

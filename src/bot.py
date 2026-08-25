@@ -577,7 +577,7 @@ class TaskSnoozeView(discord.ui.View):
 
 
 class QuickActionView(discord.ui.View):
-    """Persistent 4-button quick action bar."""
+    """Persistent 5-button quick action bar."""
 
     def __init__(self):
         super().__init__(timeout=None)
@@ -588,6 +588,16 @@ class QuickActionView(discord.ui.View):
         month_str = now_local.strftime("%Y-%m")
         status = await db.get_budget_status(month_str)
         embed = format_budget_overview(status)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Investments", style=discord.ButtonStyle.primary, emoji="💎", custom_id="perlica:btn:investments")
+    async def investments_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        start_month = now_local.strftime("%Y-%m-01")
+        invest_summary = await db.get_investments_summary(start_month)
+        dca_progress = await db.get_dca_progress(month_str)
+        embed = format_investments_overview(invest_summary, dca_progress, month_str)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Open Tasks", style=discord.ButtonStyle.primary, emoji="📋", custom_id="perlica:btn:tasks")
@@ -637,6 +647,7 @@ class LiveDashboardView(discord.ui.View):
         now_local = datetime.datetime.now(settings.tz)
         today_str = now_local.strftime("%Y-%m-%d")
         month_str = now_local.strftime("%Y-%m")
+        start_month = now_local.strftime("%Y-%m-01")
 
         _, today_spent, _ = await db.get_daily_summary(today_str)
         pace_data = await db.get_spending_pace(today_str)
@@ -648,6 +659,8 @@ class LiveDashboardView(discord.ui.View):
         streak_info = await db.get_productivity_streak(today_str)
         active_goals = await db.get_active_goals()
         rank_info = await db.get_productivity_rank(today_str)
+        dca_progress = await db.get_dca_progress(month_str)
+        invest_summary = await db.get_investments_summary(start_month)
 
         new_embed = format_live_dashboard(
             today_spent=today_spent,
@@ -661,6 +674,8 @@ class LiveDashboardView(discord.ui.View):
             date_str=today_str,
             active_goals=active_goals,
             rank_info=rank_info,
+            dca_progress=dca_progress,
+            total_invested_month=invest_summary.get("total_invested", 0.0),
         )
         await interaction.response.edit_message(embed=new_embed, view=self)
 
@@ -670,6 +685,15 @@ class LiveDashboardView(discord.ui.View):
         month_str = now_local.strftime("%Y-%m")
         status = await db.get_budget_status(month_str)
         await interaction.response.send_message(embed=format_budget_overview(status), ephemeral=True)
+
+    @discord.ui.button(label="Wealth", style=discord.ButtonStyle.primary, emoji="💎", custom_id="perlica:dash:wealth")
+    async def wealth_sub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        start_month = now_local.strftime("%Y-%m-01")
+        invest_summary = await db.get_investments_summary(start_month)
+        dca_progress = await db.get_dca_progress(month_str)
+        await interaction.response.send_message(embed=format_investments_overview(invest_summary, dca_progress, month_str), ephemeral=True)
 
     @discord.ui.button(label="Tasks", style=discord.ButtonStyle.primary, emoji="📋", custom_id="perlica:dash:tasks")
     async def task_sub(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -734,6 +758,7 @@ async def slash_dashboard(interaction: discord.Interaction):
     now_local = datetime.datetime.now(settings.tz)
     today_str = now_local.strftime("%Y-%m-%d")
     month_str = now_local.strftime("%Y-%m")
+    start_month = now_local.strftime("%Y-%m-01")
 
     _, today_spent, _ = await db.get_daily_summary(today_str)
     pace_data = await db.get_spending_pace(today_str)
@@ -745,6 +770,8 @@ async def slash_dashboard(interaction: discord.Interaction):
     streak_info = await db.get_productivity_streak(today_str)
     active_goals = await db.get_active_goals()
     rank_info = await db.get_productivity_rank(today_str)
+    dca_progress = await db.get_dca_progress(month_str)
+    invest_summary = await db.get_investments_summary(start_month)
 
     embed = format_live_dashboard(
         today_spent=today_spent,
@@ -758,8 +785,21 @@ async def slash_dashboard(interaction: discord.Interaction):
         date_str=today_str,
         active_goals=active_goals,
         rank_info=rank_info,
+        dca_progress=dca_progress,
+        total_invested_month=invest_summary.get("total_invested", 0.0),
     )
     await interaction.response.send_message(embed=embed, view=LiveDashboardView())
+
+
+@bot.tree.command(name="investments", description="View dedicated Wealth & DCA Investment Portfolio")
+async def slash_investments(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    month_str = now_local.strftime("%Y-%m")
+    start_month = now_local.strftime("%Y-%m-01")
+    invest_summary = await db.get_investments_summary(start_month)
+    dca_progress = await db.get_dca_progress(month_str)
+    embed = format_investments_overview(invest_summary, dca_progress, month_str)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="tasks", description="View active open tasks with 1-tap completion dropdown")
@@ -818,6 +858,8 @@ async def slash_report(interaction: discord.Interaction):
     goals = await db.get_active_goals()
     streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
     rank_info = await db.get_productivity_rank(now_local.strftime("%Y-%m-%d"))
+    invest_summary = await db.get_investments_summary(start_month)
+    dca_progress = await db.get_dca_progress(month_str)
 
     html_content = generate_html_report(
         month_str=month_str,
@@ -830,6 +872,8 @@ async def slash_report(interaction: discord.Interaction):
         goals=goals,
         streak_info=streak_info,
         rank_info=rank_info,
+        investments_summary=invest_summary,
+        dca_progress=dca_progress,
     )
     report_file = discord.File(
         io.BytesIO(html_content.encode("utf-8")),
@@ -1042,6 +1086,8 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
             "note": exp.note,
             "occurred_date": exp.occurred_date,
+            "asset_name": exp.asset_name,
+            "investment_bill_id": exp.investment_bill_id,
         }
         for exp in payload.expenses
     ]
@@ -1061,20 +1107,25 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
         created_expense_ids: List[int] = []
         for exp in payload.expenses:
             created_at = f"{exp.occurred_date} 12:00:00" if exp.occurred_date else now_str
+            cat_val = exp.category.value if hasattr(exp.category, "value") else str(exp.category)
             eid = await db.insert_expense(
                 amount=exp.amount,
-                category=exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                category=cat_val,
                 note=exp.note,
                 created_at=created_at,
+                asset_name=exp.asset_name,
+                recurring_bill_id=exp.investment_bill_id,
             )
             created_expense_ids.append(eid)
             inserted_expenses.append(
                 {
                     "id": eid,
                     "amount": exp.amount,
-                    "category": exp.category.value if hasattr(exp.category, "value") else str(exp.category),
+                    "category": cat_val,
                     "note": exp.note,
                     "created_at": created_at,
+                    "asset_name": exp.asset_name,
+                    "recurring_bill_id": exp.investment_bill_id,
                 }
             )
 
@@ -1165,6 +1216,16 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
 
         streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
 
+        dca_impact_info = None
+        has_investments = any(e.get("category") == "Investments & Savings" for e in inserted_expenses)
+        if has_investments:
+            dca_progress = await db.get_dca_progress(month_str)
+            if dca_progress:
+                fulfilled_count = sum(1 for d in dca_progress if d["is_fulfilled"])
+                dca_impact_info = {
+                    "status_line": f"{fulfilled_count}/{len(dca_progress)} Monthly DCA Commitments Met ✅"
+                }
+
         confirmed_embed = format_action_confirmation(
             payload=payload,
             inserted_expenses=inserted_expenses,
@@ -1173,6 +1234,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             budget_alerts=budget_alerts,
             streak_info=streak_info,
             goal_update_info=goal_update_info,
+            dca_impact_info=dca_impact_info,
         )
 
         quick_undo_view = QuickUndoView(
@@ -1278,6 +1340,17 @@ async def on_message(message: discord.Message):
         await message.reply(embed=format_goals_overview(goals), view=QuickActionView())
         return
 
+    # Direct Investments & DCA Command Check
+    if content.lower() in ("investments", "!investments", "/investments", "wealth", "portfolio", "dca", "my investments"):
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        start_month = now_local.strftime("%Y-%m-01")
+        invest_summary = await db.get_investments_summary(start_month)
+        dca_progress = await db.get_dca_progress(month_str)
+        embed = format_investments_overview(invest_summary, dca_progress, month_str)
+        await message.reply(embed=embed, view=QuickActionView())
+        return
+
     # Direct Calendar Command Check
     if content.lower() in ("calendar", "!calendar", "week", "days"):
         now_local = datetime.datetime.now(settings.tz)
@@ -1303,6 +1376,8 @@ async def on_message(message: discord.Message):
             goals = await db.get_active_goals()
             streak_info = await db.get_productivity_streak(now_local.strftime("%Y-%m-%d"))
             rank_info = await db.get_productivity_rank(now_local.strftime("%Y-%m-%d"))
+            invest_summary = await db.get_investments_summary(start_month)
+            dca_progress = await db.get_dca_progress(month_str)
 
             html_content = generate_html_report(
                 month_str=month_str,
@@ -1315,6 +1390,8 @@ async def on_message(message: discord.Message):
                 goals=goals,
                 streak_info=streak_info,
                 rank_info=rank_info,
+                investments_summary=invest_summary,
+                dca_progress=dca_progress,
             )
             report_file = discord.File(
                 io.BytesIO(html_content.encode("utf-8")),
@@ -1718,6 +1795,19 @@ async def on_message(message: discord.Message):
                 embed = format_task_selector_embed(tasks_list)
                 view = TaskMultiSelectView(tasks_list) if tasks_list else None
                 await message.reply(embed=embed, view=view)
+                return
+
+            if q.query_target == "GOALS":
+                goals = await db.get_active_goals()
+                embed = format_goals_overview(goals)
+                await message.reply(embed=embed, view=QuickActionView())
+                return
+
+            if q.query_target == "INVESTMENTS":
+                invest_summary = await db.get_investments_summary(start_d, end_d)
+                dca_progress = await db.get_dca_progress(month_str)
+                embed = format_investments_overview(invest_summary, dca_progress, month_str)
+                await message.reply(embed=embed, view=QuickActionView())
                 return
 
             if q.timeframe == "TODAY":
