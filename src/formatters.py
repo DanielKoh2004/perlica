@@ -2201,3 +2201,37 @@ class SourcesDashboardView(discord.ui.View):
             embed = format_sources_dashboard_embed(sources_summary)
             await interaction.response.edit_message(embed=embed, view=self)
 
+
+def format_ingest_hub_embed() -> discord.Embed:
+    """Format the interactive Knowledge Base Ingestion Session Hub embed."""
+    embed = discord.Embed(
+        title="📚 Knowledge Base Ingestion Hub",
+        description=(
+            "Welcome to the **Copilot Knowledge Ingestion Hub**!\n"
+            "Select a source type below to index new content into your private search engine:"
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="📄 PDF Document",
+        value="Click **Upload PDF** to start a 60s session, then drag-and-drop your PDF into chat.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🌐 Web Page URL",
+        value="Click **Ingest Web URL** to enter any documentation link or online article.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🐙 GitHub Repository",
+        value="Click **Sync GitHub Repo** for AST-level code indexing and daily auto-sync.",
+        inline=False,
+    )
+    embed.add_field(
+        name="📝 Quick Knowledge Note",
+        value="Click **Add Quick Note** to save instant snippets, guidelines, or instructions.",
+        inline=False,
+    )
+    embed.set_footer(text="All indexed sources are searchable via ? <query> or /ask")
+    return embed
+

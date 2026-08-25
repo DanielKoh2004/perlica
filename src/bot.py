@@ -5,6 +5,7 @@ import logging
 import datetime
 from typing import Optional, List, Dict, Any, Callable, Tuple
 from datetime import timedelta
+import time
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -57,6 +58,7 @@ from src.formatters import (
     format_copilot_answer_embed,
     format_copilot_answer_embeds,
     format_sources_dashboard_embed,
+    format_ingest_hub_embed,
     CopilotAnswerView,
     SourcesDashboardView,
 )
@@ -1711,63 +1713,147 @@ async def slash_repo(
     )
 
 
-ingest_group = app_commands.Group(name="ingest", description="Ingest external knowledge documents or URLs into the Copilot index")
+active_ingest_sessions: Dict[int, float] = {}
 
 
-@ingest_group.command(name="doc", description="Upload a PDF document to index into the knowledge base")
-@app_commands.describe(file="Select or drag-and-drop a PDF file to index")
-async def ingest_doc(
-    interaction: discord.Interaction,
-    file: discord.Attachment,
-):
+class WebIngestModal(discord.ui.Modal, title="🌐 Ingest Webpage URL"):
+    """Modal to enter a webpage URL for SSRF-safe ingestion."""
+
+    url_input = discord.ui.TextInput(
+        label="Webpage URL",
+        placeholder="https://docs.example.com/guide",
+        required=True,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        url_clean = self.url_input.value.strip()
+        job_id = await db.create_ingestion_job(source_type="WEB", target_ref=url_clean)
+        asyncio.create_task(run_web_ingest_job(job_id, url_clean))
+        await interaction.response.send_message(
+            f"🌐 **Web Ingestion Queued (Job #{job_id})**\n"
+            f"Fetching and parsing `{url_clean}` with SSRF safety in the background.\n"
+            f"Use `/sources` to view live status or `? <query>` to search!",
+            ephemeral=True,
+        )
+
+
+class RepoSyncModal(discord.ui.Modal, title="🐙 Sync GitHub Repository"):
+    """Modal to enter repository details for Git SHA reconciliation and AST indexing."""
+
+    repo_input = discord.ui.TextInput(
+        label="GitHub Repository (owner/repo)",
+        placeholder="e.g. DanielKoh2004/perlica",
+        required=True,
+        max_length=150,
+    )
+    branch_input = discord.ui.TextInput(
+        label="Branch",
+        default="main",
+        required=False,
+        max_length=50,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        repo_clean = self.repo_input.value.strip()
+        branch_clean = self.branch_input.value.strip() or "main"
+        job_id = await db.create_ingestion_job(source_type="GITHUB", target_ref=f"{repo_clean}:{branch_clean}")
+        asyncio.create_task(run_repo_sync_job(job_id, repo_clean, branch_clean))
+        await interaction.response.send_message(
+            f"🚀 **Repository Sync Queued (Job #{job_id})**\n"
+            f"Indexing `{repo_clean}` (`{branch_clean}`) with incremental Git SHA reconciliation in the background.\n"
+            f"Use `/sources` to view live status.",
+            ephemeral=True,
+        )
+
+
+class QuickNoteModal(discord.ui.Modal, title="📝 Add Knowledge Note"):
+    """Modal to enter instant knowledge notes or snippets."""
+
+    title_input = discord.ui.TextInput(
+        label="Note Title / Topic",
+        default="Quick Note",
+        required=True,
+        max_length=100,
+    )
+    content_input = discord.ui.TextInput(
+        label="Content / Snippet",
+        placeholder="Type reference notes, guidelines, API keys info, or cheat sheets...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=3000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title = self.title_input.value.strip()
+        content = self.content_input.value.strip()
+        now_local = datetime.datetime.now(settings.tz)
+        note_id = await db.store_quick_note(title=title, content=content, created_at=now_local)
+        try:
+            embs = await asyncio.to_thread(compute_embeddings_batch, [f"{title}\n\n{content}"])
+            if embs:
+                await db.store_chunk_embeddings([(MODEL_ID, embs[0])], [note_id])
+        except Exception as e:
+            logger.warning(f"Failed to embed quick note: {e}")
+
+        await interaction.response.send_message(
+            f"✅ **Knowledge Note Saved (#{note_id})**\n"
+            f"**{title}** is now indexed in SQLite and searchable via `? <query>`!",
+            ephemeral=True,
+        )
+
+
+class KnowledgeIngestSessionView(discord.ui.View):
+    """Interactive Hub View for Copilot Knowledge Base Ingestion."""
+
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="📄 Upload PDF", style=discord.ButtonStyle.primary, custom_id="perlica:ingest:pdf_session")
+    async def upload_pdf_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_user_authorized_for_copilot(interaction.user.id):
+            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+            return
+
+        active_ingest_sessions[interaction.user.id] = time.time() + 60
+        await interaction.response.send_message(
+            "📎 **PDF Ingestion Session Active (60s)**\n"
+            "Please **drag-and-drop or upload your `.pdf` file** into this chat now.\n"
+            "Perlica will automatically index it into your Copilot Knowledge Base!",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="🌐 Ingest Web URL", style=discord.ButtonStyle.secondary, custom_id="perlica:ingest:web_modal")
+    async def web_url_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_user_authorized_for_copilot(interaction.user.id):
+            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+            return
+        await interaction.response.send_modal(WebIngestModal())
+
+    @discord.ui.button(label="🐙 Sync GitHub Repo", style=discord.ButtonStyle.secondary, custom_id="perlica:ingest:repo_modal")
+    async def sync_repo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_user_authorized_for_copilot(interaction.user.id):
+            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+            return
+        await interaction.response.send_modal(RepoSyncModal())
+
+    @discord.ui.button(label="📝 Add Quick Note", style=discord.ButtonStyle.secondary, custom_id="perlica:ingest:note_modal")
+    async def add_note_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_user_authorized_for_copilot(interaction.user.id):
+            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+            return
+        await interaction.response.send_modal(QuickNoteModal())
+
+
+@bot.tree.command(name="ingest", description="Open the Knowledge Base Ingestion Hub to index PDFs, web URLs, repos, or notes")
+async def slash_ingest(interaction: discord.Interaction):
     if not is_user_authorized_for_copilot(interaction.user.id):
         await interaction.response.send_message("⛔ You are not authorized to ingest sources.", ephemeral=True)
         return
 
-    if not file.filename.lower().endswith(".pdf"):
-        await interaction.response.send_message("❌ Only `.pdf` files are supported for document indexing.", ephemeral=True)
-        return
-
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    pdf_bytes = await file.read()
-    os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
-    safe_filename = os.path.basename(file.filename)
-    dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
-    with open(dest_path, "wb") as f:
-        f.write(pdf_bytes)
-
-    job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
-    asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
-    await interaction.followup.send(
-        f"📄 **Knowledge Document Ingestion Queued (Job #{job_id})**\n"
-        f"Extracting and vector-indexing `{safe_filename}` in the background.\n"
-        f"Use `/sources` to view live status or `? <query>` to search!",
-        ephemeral=True
-    )
-
-
-@ingest_group.command(name="url", description="Ingest a public webpage or documentation URL into the knowledge base")
-@app_commands.describe(url="Webpage URL (e.g. https://docs.example.com)")
-async def ingest_url(
-    interaction: discord.Interaction,
-    url: str,
-):
-    if not is_user_authorized_for_copilot(interaction.user.id):
-        await interaction.response.send_message("⛔ You are not authorized to ingest sources.", ephemeral=True)
-        return
-
-    url_clean = url.strip()
-    job_id = await db.create_ingestion_job(source_type="WEB", target_ref=url_clean)
-    asyncio.create_task(run_web_ingest_job(job_id, url_clean))
-    await interaction.response.send_message(
-        f"🌐 **Web Ingestion Queued (Job #{job_id})**\n"
-        f"Fetching and parsing `{url_clean}` with SSRF safety in the background.\n"
-        f"Use `/sources` to view live status or `? <query>` to search!",
-        ephemeral=True
-    )
-
-
-bot.tree.add_command(ingest_group)
+    embed = format_ingest_hub_embed()
+    view = KnowledgeIngestSessionView()
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="note", description="Quickly save an instant note into the SQLite knowledge index")
@@ -2504,6 +2590,28 @@ async def on_message(message: discord.Message):
             elif any(lower_name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
                 image_attachment = att
             elif lower_name.endswith(".pdf"):
+                now_time = time.time()
+                if active_ingest_sessions.get(message.author.id, 0) > now_time:
+                    active_ingest_sessions.pop(message.author.id, None)
+                    if not is_user_authorized_for_copilot(message.author.id):
+                        await message.reply("⛔ You are not authorized to ingest sources.")
+                        return
+                    async with message.channel.typing():
+                        pdf_bytes = await att.read()
+                        os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
+                        safe_filename = os.path.basename(att.filename)
+                        dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
+                        with open(dest_path, "wb") as f:
+                            f.write(pdf_bytes)
+                        job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
+                        asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
+                        await message.reply(
+                            f"📄 **Knowledge Ingestion Session: Processing Started! (Job #{job_id})**\n"
+                            f"Extracting and vector-indexing `{safe_filename}` in the background.\n"
+                            f"Use `/sources` to view live status or `? <query>` to search!"
+                        )
+                    return
+
                 async with message.channel.typing():
                     pdf_bytes = await att.read()
                     from pypdf import PdfReader
@@ -2528,11 +2636,21 @@ async def on_message(message: discord.Message):
                     await message.reply(
                         "⚠️ **No expense or bill details detected in this PDF.**\n"
                         "• All direct uploads in chat are treated as receipts/invoices for expense tracking.\n"
-                        "• To index a document into your searchable **Knowledge Base**, use the `/ingest` command!"
+                        "• To index a document into your searchable **Knowledge Base**, click **Upload PDF** in `/ingest`!"
                     )
                 return
 
     if not content and not image_attachment:
+        return
+
+    # Direct Ingest Hub Command Check
+    if content.lower().strip() in ("ingest", "!ingest", "knowledge", "kb"):
+        if not is_user_authorized_for_copilot(message.author.id):
+            await message.reply("⛔ You are not authorized to ingest sources.")
+            return
+        embed = format_ingest_hub_embed()
+        view = KnowledgeIngestSessionView()
+        await message.reply(embed=embed, view=view)
         return
 
     # Direct Help Command Check

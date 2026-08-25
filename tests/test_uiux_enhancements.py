@@ -150,3 +150,25 @@ def test_stateless_copilot_and_sources_views_survive_restarts():
     assert src_view.timeout is None
     btn_src = src_view.children[0]
     assert btn_src.custom_id == "perlica:sources:refresh"
+
+
+def test_knowledge_ingestion_hub_embed_and_view():
+    """Verify format_ingest_hub_embed produces structured options and KnowledgeIngestSessionView."""
+    from src.formatters import format_ingest_hub_embed
+    from src.bot import KnowledgeIngestSessionView, WebIngestModal, RepoSyncModal, QuickNoteModal
+
+    emb = format_ingest_hub_embed()
+    assert "Knowledge Base Ingestion Hub" in emb.title
+    assert len(emb.fields) == 4
+    assert any("PDF Document" in f.name for f in emb.fields)
+    assert any("Web Page URL" in f.name for f in emb.fields)
+    assert any("GitHub Repository" in f.name for f in emb.fields)
+    assert any("Quick Knowledge Note" in f.name for f in emb.fields)
+
+    view = KnowledgeIngestSessionView()
+    assert len(view.children) == 4
+    custom_ids = [c.custom_id for c in view.children]
+    assert "perlica:ingest:pdf_session" in custom_ids
+    assert "perlica:ingest:web_modal" in custom_ids
+    assert "perlica:ingest:repo_modal" in custom_ids
+    assert "perlica:ingest:note_modal" in custom_ids
