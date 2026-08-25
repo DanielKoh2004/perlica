@@ -1,5 +1,6 @@
 import io
 import re
+import asyncio
 import logging
 import datetime
 from typing import Optional, List, Dict, Any, Callable, Tuple
@@ -1330,9 +1331,6 @@ async def on_interaction(interaction: discord.Interaction):
                 view = DailyFocusView(task_id=tasks[0]["id"], next_index=next_idx)
                 await interaction.response.edit_message(embed=embed, view=view)
             return
-
-    # Delegate to default discord.py interaction dispatching (slash commands, tree, standard views)
-    await bot.process_application_commands(interaction)
 
 
 # --- SLASH COMMAND AUTOCOMPLETES (STRICT 25 CAP) ---
