@@ -1655,11 +1655,44 @@ def format_upcoming_holidays_embed(
     return embed
 
 
+def sanitize_discord_response_markdown(text: str) -> str:
+    """Clean up markdown text to render beautifully inside Discord embeds."""
+    if not text:
+        return ""
+    # Convert HTML line breaks <br>, <br/>, <br /> to newlines
+    cleaned = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    # Strip HTML tags
+    cleaned = re.sub(r"</?[a-zA-Z0-9]+(?:\s+[^>]*)?>", "", cleaned)
+    # Convert markdown table separator rows |---|---| to blank lines
+    cleaned = re.sub(r"\n\|[-:\s|]+\|\n", "\n\n", cleaned)
+
+    # Convert pipe-separated markdown table rows into clean bullet points
+    lines = cleaned.split("\n")
+    formatted_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|") and not re.match(r"^\|[-:\s|]+\|$", stripped):
+            cells = [c.strip() for c in stripped.split("|") if c.strip()]
+            if not cells:
+                continue
+            if len(cells) == 1:
+                formatted_lines.append(f"• {cells[0]}")
+            else:
+                formatted_lines.append(f"• **{cells[0]}**: " + " — ".join(cells[1:]))
+        else:
+            formatted_lines.append(line)
+    
+    cleaned = "\n".join(formatted_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def format_copilot_answer_embed(answer_data: Dict[str, Any]) -> discord.Embed:
     """Format an Evidence-Grounded Copilot answer with source citations."""
     status = answer_data.get("status", "SUCCESS")
     query = answer_data.get("query", "")
-    response = answer_data.get("response", "")
+    raw_response = answer_data.get("response", "")
+    response = sanitize_discord_response_markdown(raw_response)
     citations = answer_data.get("citations", [])
 
     if status == "ABSTAINED":
