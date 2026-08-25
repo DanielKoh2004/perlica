@@ -71,7 +71,7 @@ from src.github_sync import (
     chunk_generic_code,
     MAX_REPO_FILES,
 )
-from src.pdf_parser import parse_pdf_file
+from src.pdf_parser import parse_pdf_file, MAX_PDF_SIZE_BYTES
 from src.web_scraper import scrape_webpage
 from src.rag_engine import (
     synthesize_copilot_answer,
@@ -1778,7 +1778,7 @@ class QuickNoteModal(discord.ui.Modal, title="📝 Add Knowledge Note"):
     )
     content_input = discord.ui.TextInput(
         label="Content / Snippet",
-        placeholder="Type reference notes, guidelines, API keys info, or cheat sheets...",
+        placeholder="Type reference notes, guidelines, API endpoints, or cheat sheets...",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=3000,
@@ -1787,14 +1787,31 @@ class QuickNoteModal(discord.ui.Modal, title="📝 Add Knowledge Note"):
     async def on_submit(self, interaction: discord.Interaction):
         title = self.title_input.value.strip()
         content = self.content_input.value.strip()
-        now_local = datetime.datetime.now(settings.tz)
-        note_id = await db.store_quick_note(title=title, content=content, created_at=now_local)
+
+        # P0: Unified security boundary — Secret scanning before persistence
+        if scan_content_for_secrets(title) or scan_content_for_secrets(content):
+            await interaction.response.send_message(
+                "⛔ **Security Warning**: Note rejected. Content matches private keys or sensitive credential patterns.",
+                ephemeral=True,
+            )
+            return
+
+        # P1: Vectorize BEFORE database insert to guarantee zero unindexed orphan chunks
         try:
             embs = await asyncio.to_thread(compute_embeddings_batch, [f"{title}\n\n{content}"])
-            if embs:
-                await db.store_chunk_embeddings([(MODEL_ID, embs[0])], [note_id])
+            if not embs or len(embs) == 0:
+                raise ValueError("Empty embedding vector returned.")
+            emb_tuple = (MODEL_ID, embs[0])
         except Exception as e:
-            logger.warning(f"Failed to embed quick note: {e}")
+            logger.error(f"Failed to embed quick note: {e}", exc_info=True)
+            await interaction.response.send_message(
+                "❌ **Embedding Error**: Failed to vectorize note. The note was not saved to maintain index integrity.",
+                ephemeral=True,
+            )
+            return
+
+        note_id = await db.store_quick_note(content=content, section_title=title)
+        await db.store_chunk_embeddings([emb_tuple], [note_id])
 
         await interaction.response.send_message(
             f"✅ **Knowledge Note Saved (#{note_id})**\n"
@@ -1867,23 +1884,40 @@ async def slash_note(
         await interaction.response.send_message("⛔ You are not authorized to save notes.", ephemeral=True)
         return
 
-    chunk_id = await db.store_quick_note(content=content, section_title=title)
-    
-    # Compute embedding for immediate vector retrieval
-    emb_blob = await asyncio.to_thread(compute_embedding, content)
-    async with db.get_connection() as conn:
-        await conn.execute(
-            "INSERT INTO chunk_embeddings (chunk_id, model_id, embedding_blob) VALUES (?, ?, ?)",
-            (chunk_id, MODEL_ID, emb_blob),
+    content_clean = content.strip()
+    title_clean = title.strip()
+
+    # P0: Unified security boundary — Secret scanning before persistence
+    if scan_content_for_secrets(title_clean) or scan_content_for_secrets(content_clean):
+        await interaction.response.send_message(
+            "⛔ **Security Warning**: Note rejected. Content matches private keys or sensitive credential patterns.",
+            ephemeral=True,
         )
-        await conn.commit()
+        return
+
+    # P1: Vectorize BEFORE database insert to guarantee zero unindexed orphan chunks
+    try:
+        embs = await asyncio.to_thread(compute_embeddings_batch, [f"{title_clean}\n\n{content_clean}"])
+        if not embs or len(embs) == 0:
+            raise ValueError("Empty embedding vector returned.")
+        emb_tuple = (MODEL_ID, embs[0])
+    except Exception as e:
+        logger.error(f"Failed to embed quick note: {e}", exc_info=True)
+        await interaction.response.send_message(
+            "❌ **Embedding Error**: Failed to vectorize note. The note was not saved to maintain index integrity.",
+            ephemeral=True,
+        )
+        return
+
+    chunk_id = await db.store_quick_note(content=content_clean, section_title=title_clean)
+    await db.store_chunk_embeddings([emb_tuple], [chunk_id])
 
     await interaction.response.send_message(
         f"📝 **Note Saved & Indexed!**\n"
-        f"• **Title**: `{title}`\n"
-        f"• **Content**: {content[:100]}{'...' if len(content) > 100 else ''}\n"
-        f"Searchable instantly via `/ask`!",
-        ephemeral=True
+        f"• **Title**: `{title_clean}`\n"
+        f"• **Content**: {content_clean[:100]}{'...' if len(content_clean) > 100 else ''}\n"
+        f"Searchable instantly via `? <query>` or `/ask`!",
+        ephemeral=True,
     )
 
 
@@ -2590,6 +2624,10 @@ async def on_message(message: discord.Message):
             elif any(lower_name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
                 image_attachment = att
             elif lower_name.endswith(".pdf"):
+                if att.size and att.size > MAX_PDF_SIZE_BYTES:
+                    await message.reply(f"⚠️ **File Size Limit**: PDF exceeds maximum limit (5 MB). File size: {att.size / (1024*1024):.1f} MB.")
+                    return
+
                 now_time = time.time()
                 if active_ingest_sessions.get(message.author.id, 0) > now_time:
                     active_ingest_sessions.pop(message.author.id, None)

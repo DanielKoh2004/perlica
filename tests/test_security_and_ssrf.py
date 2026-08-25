@@ -83,3 +83,20 @@ def test_copilot_authorization_fails_closed(monkeypatch):
     assert is_user_authorized_for_copilot(111) is True
     assert is_user_authorized_for_copilot(222) is True
     assert is_user_authorized_for_copilot(333) is False
+
+
+def test_quick_notes_secret_scanning_and_embedding_semantics():
+    """Verify that Quick Notes pass through secret scanning before persistence."""
+    from src.security import scan_content_for_secrets
+
+    # Case 1: Private key or token in note content
+    secret_note = "Here is my secret token: ghp_123456789012345678901234567890123456"
+    assert scan_content_for_secrets(secret_note) is True
+
+    secret_title = "-----BEGIN RSA PRIVATE KEY-----"
+    assert scan_content_for_secrets(secret_title) is True
+
+    # Case 2: Safe notes pass
+    safe_note = "Remember to deploy Railway staging using git push origin main."
+    assert scan_content_for_secrets(safe_note) is False
+    assert scan_content_for_secrets("Deployment Cheatsheet") is False
