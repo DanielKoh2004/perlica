@@ -1754,6 +1754,16 @@ def sanitize_prose_segment(text: str) -> str:
     return cleaned
 
 
+def balance_code_fences(content: str) -> str:
+    """Ensure all open code fences (```) in a content block are properly closed."""
+    if not content:
+        return ""
+    fence_count = len(re.findall(r"(?m)^```", content))
+    if fence_count % 2 != 0:
+        return content.rstrip() + "\n```"
+    return content
+
+
 def sanitize_discord_response_markdown(text: str) -> str:
     """
     Clean up markdown text to render cleanly and safely inside Discord embeds.
@@ -1762,7 +1772,8 @@ def sanitize_discord_response_markdown(text: str) -> str:
     if not text:
         return ""
 
-    segments = split_code_and_prose(text)
+    balanced_text = balance_code_fences(text)
+    segments = split_code_and_prose(balanced_text)
     sanitized_parts = []
     for is_code, content in segments:
         if is_code:
@@ -1878,7 +1889,7 @@ def chunk_section_content_safely(text: str, max_chars: int = 950) -> List[str]:
     of the chunk and reopens it (```<lang>) at the start of the next chunk.
     """
     if len(text) <= max_chars:
-        return [text]
+        return [balance_code_fences(text)]
 
     lines = text.split("\n")
     chunks: List[str] = []
@@ -1896,7 +1907,7 @@ def chunk_section_content_safely(text: str, max_chars: int = 950) -> List[str]:
             if in_code_block:
                 current_lines.append("```")
                 chunks.append("\n".join(current_lines))
-                current_lines = [f"```{code_lang}"]
+                current_lines = [f"```{code_lang}"] if code_lang else ["```"]
                 current_char_count = len(current_lines[0]) + 1
             else:
                 chunks.append("\n".join(current_lines))
@@ -1919,7 +1930,7 @@ def chunk_section_content_safely(text: str, max_chars: int = 950) -> List[str]:
             current_lines.append("```")
         chunks.append("\n".join(current_lines))
 
-    return chunks
+    return [balance_code_fences(c) for c in chunks]
 
 
 def format_answer_sections(text: str) -> List[Tuple[str, str]]:
@@ -1931,13 +1942,25 @@ def format_answer_sections(text: str) -> List[Tuple[str, str]]:
     sections: List[Tuple[str, str]] = []
     current_title = ""
     current_lines: List[str] = []
+    in_code_block = False
 
     for line in lines:
-        header_match = re.match(r"^(?:#{1,6}\s+|\*\*)([^*\n#]+)(?:\*\*|:)?\s*$", line.strip())
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            current_lines.append(line)
+            continue
+
+        # Header detection only applies OUTSIDE active code blocks!
+        header_match = (
+            re.match(r"^(?:#{1,6}\s+|\*\*)([^*\n#]+)(?:\*\*|:)?\s*$", stripped)
+            if not in_code_block
+            else None
+        )
         if header_match and len(current_lines) > 0:
             content_str = "\n".join(current_lines).strip()
             if content_str:
-                sections.append((current_title, content_str))
+                sections.append((current_title, balance_code_fences(content_str)))
             current_title = header_match.group(1).strip()
             current_lines = []
         elif header_match and not current_lines:
@@ -1948,21 +1971,21 @@ def format_answer_sections(text: str) -> List[Tuple[str, str]]:
     if current_lines:
         content_str = "\n".join(current_lines).strip()
         if content_str:
-            sections.append((current_title, content_str))
+            sections.append((current_title, balance_code_fences(content_str)))
 
     if not sections and text.strip():
-        sections = [("", text.strip())]
+        sections = [("", balance_code_fences(text.strip()))]
 
     # Chunk any section whose content exceeds 1024 characters safely
     chunked_sections: List[Tuple[str, str]] = []
     for title, content in sections:
         if len(content) <= 1024:
-            chunked_sections.append((title, content))
+            chunked_sections.append((title, balance_code_fences(content)))
         else:
             sub_chunks = chunk_section_content_safely(content, max_chars=950)
             for idx, sc in enumerate(sub_chunks):
                 sub_title = title if idx == 0 else f"{title} (Part {idx+1})"
-                chunked_sections.append((sub_title, sc[:1024]))
+                chunked_sections.append((sub_title, balance_code_fences(sc[:1024])))
 
     return chunked_sections
 

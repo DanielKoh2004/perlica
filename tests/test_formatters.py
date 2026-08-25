@@ -426,3 +426,53 @@ def test_grouped_citations_field_by_source_file():
     assert "[L1021-1061](https://github.com/DanielKoh2004/perlica/blob/main/src/database.py#L1021-L1061)" in val
     assert "[L971-1019](https://github.com/DanielKoh2004/perlica/blob/main/src/database.py#L971-L1019)" in val
     assert "• **`src/formatters.py`**" in val
+
+
+def test_code_block_fences_never_leak_prose_into_code():
+    """Verify that unclosed code blocks are automatically balanced and never leak prose into code."""
+    from src.formatters import format_answer_sections, sanitize_discord_response_markdown
+
+    # LLM produces an unclosed code block followed by a header and prose
+    raw_text = (
+        "## Section 1\n"
+        "Here is the handler:\n"
+        "```python\n"
+        "async def on_message(message: discord.Message):\n"
+        "# reply with embeds and interactive views\n"
+        "    await message.channel.send('hello')\n"
+        "```\n\n"
+        "## Section 2\n"
+        "This is standard prose that should NOT be in a code block."
+    )
+
+    sections = format_answer_sections(raw_text)
+    assert len(sections) == 2
+    assert sections[0][0] == "Section 1"
+    assert sections[1][0] == "Section 2"
+
+    # Invariant: Section 2 content must not start or end with a stray backtick fence
+    assert "```" not in sections[1][1]
+    assert "This is standard prose" in sections[1][1]
+
+
+def test_python_comments_inside_code_are_not_split_as_headers():
+    """Verify Python comments starting with # inside code blocks do not trigger section headers."""
+    from src.formatters import format_answer_sections
+
+    raw_text = (
+        "## Overview\n"
+        "```python\n"
+        "# 1. Compute total\n"
+        "total = sum(items)\n"
+        "# 2. Log result\n"
+        "logger.info(total)\n"
+        "```\n"
+        "All done."
+    )
+
+    sections = format_answer_sections(raw_text)
+    # Only 1 section named Overview, comments must not be split out as separate sections
+    assert len(sections) == 1
+    assert sections[0][0] == "Overview"
+    assert "# 1. Compute total" in sections[0][1]
+    assert "# 2. Log result" in sections[0][1]
