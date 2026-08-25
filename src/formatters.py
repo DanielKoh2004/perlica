@@ -189,6 +189,7 @@ def format_action_confirmation(
     streak_info: Optional[Dict[str, Any]] = None,
     goal_update_info: Optional[Dict[str, Any]] = None,
     dca_impact_info: Optional[Dict[str, Any]] = None,
+    fuel_impact_info: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build a rich confirmation embed for logged actions with hierarchy, budget alerts, and streak badge."""
     is_breach = bool(budget_alerts and any("exceeded" in a.lower() or "🚨" in a for a in budget_alerts))
@@ -232,6 +233,26 @@ def format_action_confirmation(
                 value="\n".join(lines) + dca_note,
                 inline=False,
             )
+
+    # 1.5 Fuel Subsidy Widget
+    if fuel_impact_info:
+        grade = fuel_impact_info["grade"]
+        liters = fuel_impact_info["liters_added"]
+        quota_left = fuel_impact_info.get("ron95_quota_remaining", 200.0)
+        new_total = fuel_impact_info.get("new_total_ron95_liters", 0.0)
+        consumes_sub = fuel_impact_info.get("consumes_subsidy", True)
+
+        if consumes_sub:
+            bar = render_progress_bar(new_total, 200.0, bar_length=8)
+            fuel_text = f"• **Volume**: **{liters} Litres** ({fuel_impact_info['tier_label']})\n• **Subsidized Quota**:\n  {bar} _({quota_left:.1f}L left)_"
+        else:
+            fuel_text = f"• **Volume**: **{liters} Litres** ({fuel_impact_info['tier_label']})\n_Unsubsidized grade. 200L RON95 quota untouched!_"
+
+        embed.add_field(
+            name=f"🚗 Fuel Logged: {grade}",
+            value=fuel_text,
+            inline=False,
+        )
 
     # 2. Budget Alerts (Breach or Warning)
     if budget_alerts:
@@ -450,6 +471,24 @@ def format_morning_briefing(
             value="\n".join(b_lines),
             inline=False,
         )
+
+    # 7. Upcoming Selangor & Federal Public Holidays (Long Weekend Detector)
+    try:
+        cur_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        holidays_list = get_upcoming_malaysian_holidays(cur_date, days_ahead=14, subdiv="SGR")
+        if holidays_list:
+            h_lines = []
+            for h in holidays_list[:3]:
+                lw_tag = " — **🏝️ 3-Day Long Weekend!**" if h["is_long_weekend"] else ""
+                day_tag = "Today!" if h["days_away"] == 0 else f"in {h['days_away']} days ({h['day_name']}, {h['date']})"
+                h_lines.append(f"• **{h['name']}** — {day_tag}{lw_tag}")
+            embed.add_field(
+                name="🇲🇾 Upcoming Public Holidays (Selangor / Federal)",
+                value="\n".join(h_lines),
+                inline=False,
+            )
+    except Exception:
+        pass
 
     return embed
 
@@ -1486,4 +1525,71 @@ def format_focus_task_embed(
         color=discord.Color.brand_green() if task.get("priority") != "HIGH" else discord.Color.gold(),
     )
     embed.set_footer(text="Tap [Complete] when done, or [Skip] to rotate focus.")
+    return embed
+
+
+def get_upcoming_malaysian_holidays(
+    base_date: Any, days_ahead: int = 30, subdiv: str = "SGR"
+) -> List[Dict[str, Any]]:
+    """
+    Fetch upcoming Federal and Selangor public holidays using the holidays library.
+    Correctly accounts for Islamic lunar shifts, Hindu lunisolar shifts, and state holidays.
+    """
+    import holidays
+    if isinstance(base_date, str):
+        base_date = datetime.strptime(base_date, "%Y-%m-%d").date()
+    elif isinstance(base_date, datetime):
+        base_date = base_date.date()
+
+    my_holidays = holidays.Malaysia(years=[base_date.year, base_date.year + 1], subdiv=subdiv)
+    upcoming = []
+
+    for hol_date, hol_name in sorted(my_holidays.items()):
+        delta = (hol_date - base_date).days
+        if 0 <= delta <= days_ahead:
+            weekday = hol_date.weekday()
+            is_long_weekend = weekday in (0, 4)  # Monday or Friday
+            upcoming.append({
+                "name": hol_name,
+                "date": hol_date.strftime("%Y-%m-%d"),
+                "days_away": delta,
+                "is_long_weekend": is_long_weekend,
+                "day_name": hol_date.strftime("%A"),
+            })
+
+    return upcoming
+
+
+def format_fuel_receipt_embed(
+    amount: float,
+    fuel_details: Dict[str, Any],
+) -> discord.Embed:
+    """Build a rich Malaysian fuel receipt and RON95 quota tracking embed."""
+    grade = fuel_details["grade"]
+    liters = fuel_details["liters_added"]
+    tier_label = fuel_details["tier_label"]
+    consumes_sub = fuel_details["consumes_subsidy"]
+    quota_left = fuel_details.get("ron95_quota_remaining", 200.0)
+    new_total = fuel_details.get("new_total_ron95_liters", 0.0)
+
+    embed = discord.Embed(
+        title=f"🚗 Fuel Logged — {grade} ({liters} Litres)",
+        description=f"• **Amount**: **RM {amount:.2f}**\n• **Pricing Tier**: `{tier_label}`",
+        color=discord.Color.teal() if consumes_sub else discord.Color.blue(),
+    )
+
+    if consumes_sub:
+        bar = render_progress_bar(new_total, 200.0, bar_length=10)
+        embed.add_field(
+            name="🇲🇾 Subsidized RON95 Monthly Quota (200L @ RM 1.99/L)",
+            value=f"{bar}\n_Quota remaining this month: **{quota_left:.2f} L**_",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="⛽ Unsubsidized Fuel Note",
+            value=f"_{grade} is unsubsidized market floating rate. Your 200L RON95 subsidy quota remains untouched!_",
+            inline=False,
+        )
+
     return embed

@@ -436,6 +436,21 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
      - If user explicitly mentions the asset (e.g. "bought $100 s&p500", "dca 450 into voo", "deposited 500 in stashaway"), match to the exact `[Bill ID: X]` in ACTIVE RECURRING BILLS & INVESTMENTS and set `investment_bill_id=X`.
      - If user says generic "invested RM 300 today" and multiple recurring investments exist: DO NOT guess `investment_bill_id`. Keep `investment_bill_id=None`.
      - If exactly 1 recurring investment exists in the entire database, generic "invested 100" can link to that single bill.
+
+15. MALAYSIAN VERNACULAR, MANGLISH & RELATIVE DATES:
+   - Comprehend authentic Malaysian phrasing, slang, and dialect vocabulary:
+     - Food: 'makan', 'tapau', 'bungkus', 'ikat tepi', 'nasi lemak', 'roti canai', 'teh tarik', 'kopi o', 'nasi kandar', 'nasi campur', 'pasar malam', 'mamak', 'kedai runcit' -> ExpenseCategory.FOOD.
+     - Transport: 'isi minyak', 'minyak kereta', 'ron95', 'ron97', 'diesel', 'topup tng', 'touch n go', 'tol', 'lrt', 'mrt', 'saman', 'parking' -> ExpenseCategory.TRANSPORT.
+     - Utilities: 'bil tnb', 'bil air', 'unifi', 'indah water', 'astro', 'syabas', 'air selangor' -> ExpenseCategory.UTILITIES.
+     - Wealth/Savings: 'simpan', 'transfer kat mak', 'main kutu' -> ExpenseCategory.INVESTMENT.
+     - Malay Relative Dates:
+       - 'semalam' -> strictly yesterday (today - 1 day).
+       - 'kelmarin' -> day before yesterday (today - 2 days) by default, or the named day if specified (e.g. 'kelmarin hari Ahad').
+       - 'tadi' / 'pagi tadi' / 'tengah hari tadi' -> today.
+     - Examples:
+       - "tapau nasi kandar rm15 semalam" -> ExpenseItem(amount=15.0, category=ExpenseCategory.FOOD, note="nasi kandar tapau", occurred_date="<yesterday_date>")
+       - "isi minyak petronas rm50" -> ExpenseItem(amount=50.0, category=ExpenseCategory.TRANSPORT, note="Petronas fuel (RON95)")
+       - "bayar bil tnb rm120 kelmarin" -> ExpenseItem(amount=120.0, category=ExpenseCategory.UTILITIES, note="TNB Electricity Bill", occurred_date="<day_before_yesterday_date>")
 """
 
 

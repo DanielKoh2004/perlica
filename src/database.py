@@ -1678,3 +1678,126 @@ class DatabaseManager:
             ) as cur:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
+
+    async def get_monthly_ron95_liters(self, month_str: str) -> float:
+        """
+        Calculate total RON95 liters consumed in a given calendar month.
+        Strictly excludes RON97, Diesel, cooking oil, and restaurants.
+        """
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT amount, category, note FROM expenses
+                WHERE substr(created_at, 1, 7) = ? AND category = 'Transport'
+                ORDER BY created_at ASC
+                """,
+                (month_str,),
+            ) as cur:
+                rows = await cur.fetchall()
+
+        cumulative_liters = 0.0
+        for r in rows:
+            f_info = classify_fuel_expense(r["category"], r["note"])
+            if f_info and f_info["consumes_subsidy"]:
+                details = calculate_fuel_details(r["amount"], f_info, cumulative_liters)
+                cumulative_liters = details["new_total_ron95_liters"]
+
+        return cumulative_liters
+
+
+def classify_fuel_expense(category: str, note: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Classify vehicle fuel transactions into distinct grades.
+    Excludes cooking oil (minyak masak) and restaurants (Shell Out).
+    Returns: {grade: 'RON95'|'RON97'|'Diesel', price_per_liter: float, consumes_subsidy: bool} or None
+    """
+    if category != "Transport" or not note:
+        return None
+    cleaned = note.lower()
+
+    # Explicit negative exclusions (cooking oil, groceries, restaurants)
+    negative_exclusions = {
+        "minyak masak", "cooking oil", "shell out", "shellout", "speedmart",
+        "groceries", "food", "kedai runcit", "pasar", "ikan", "ayam"
+    }
+    if any(neg in cleaned for neg in negative_exclusions):
+        return None
+
+    # 1. RON97 Check (Unsubsidized Floating ~RM 3.47/L)
+    if "ron97" in cleaned or "v-power racing" in cleaned or "vpower" in cleaned:
+        return {"grade": "RON97", "price_per_liter": 3.47, "consumes_subsidy": False}
+
+    # 2. Diesel Check (Euro 5 Diesel ~RM 3.35/L)
+    if "diesel" in cleaned or "euro 5" in cleaned or "euro5" in cleaned:
+        return {"grade": "Diesel", "price_per_liter": 3.35, "consumes_subsidy": False}
+
+    # 3. RON95 Subsidized Tier (Default for petrol, petronas, shell, caltex, bhp, isi minyak)
+    positive_fuel_tokens = {
+        "ron95", "petrol", "isi minyak", "minyak kereta", "petronas", "caltex",
+        "bhp", "petron", "shell", "pump minyak", "fuel", "minyak"
+    }
+    if any(pos in cleaned for pos in positive_fuel_tokens):
+        return {"grade": "RON95", "price_per_liter": 1.99, "consumes_subsidy": True}
+
+    return None
+
+
+def calculate_fuel_details(
+    amount: float, fuel_info: Dict[str, Any], prior_ron95_liters: float = 0.0
+) -> Dict[str, Any]:
+    """
+    Calculate liters pumped and 200L RON95 subsidy quota impact.
+    RON95: First 200L @ RM 1.99/L, subsequent liters @ RM 2.60/L.
+    RON97 / Diesel: Exact market pricing with 0 subsidy consumption.
+    """
+    grade = fuel_info["grade"]
+    consumes_subsidy = fuel_info["consumes_subsidy"]
+
+    if not consumes_subsidy:
+        price = fuel_info["price_per_liter"]
+        liters = round(amount / price, 2)
+        return {
+            "grade": grade,
+            "liters_added": liters,
+            "tier_label": f"Market Rate (@ RM {price:.2f}/L)",
+            "consumes_subsidy": False,
+            "prior_ron95_liters": prior_ron95_liters,
+            "new_total_ron95_liters": prior_ron95_liters,
+            "ron95_quota_remaining": max(0.0, round(200.0 - prior_ron95_liters, 2)),
+        }
+
+    # RON95 Two-Tier Subsidy Math
+    rem_sub_liters = max(0.0, 200.0 - prior_ron95_liters)
+    cost_to_fill_sub = rem_sub_liters * 1.99
+
+    if amount <= cost_to_fill_sub or rem_sub_liters >= (amount / 1.99):
+        # Fully Subsidized
+        sub_liters = round(amount / 1.99, 2)
+        total_liters = sub_liters
+        new_ron95_total = round(prior_ron95_liters + total_liters, 2)
+        tier_label = "Subsidized Tier (@ RM 1.99/L)"
+    elif rem_sub_liters > 0:
+        # Split Boundary (Part subsidized @ 1.99, part unsubsidized @ 2.60)
+        sub_liters = round(rem_sub_liters, 2)
+        rem_amount = amount - cost_to_fill_sub
+        unsub_liters = round(rem_amount / 2.60, 2)
+        total_liters = round(sub_liters + unsub_liters, 2)
+        new_ron95_total = round(prior_ron95_liters + total_liters, 2)
+        tier_label = f"Split: {sub_liters}L @ RM 1.99 + {unsub_liters}L @ RM 2.60"
+    else:
+        # Fully Unsubsidized
+        unsub_liters = round(amount / 2.60, 2)
+        total_liters = unsub_liters
+        new_ron95_total = round(prior_ron95_liters + total_liters, 2)
+        tier_label = "Unsubsidized Tier (@ RM 2.60/L)"
+
+    quota_left = max(0.0, round(200.0 - new_ron95_total, 2))
+    return {
+        "grade": "RON95",
+        "liters_added": total_liters,
+        "tier_label": tier_label,
+        "consumes_subsidy": True,
+        "prior_ron95_liters": prior_ron95_liters,
+        "new_total_ron95_liters": new_ron95_total,
+        "ron95_quota_remaining": quota_left,
+    }

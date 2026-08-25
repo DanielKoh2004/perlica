@@ -9,7 +9,12 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from src.config import settings
-from src.database import DatabaseManager, normalize_canonical_asset
+from src.database import (
+    DatabaseManager,
+    normalize_canonical_asset,
+    classify_fuel_expense,
+    calculate_fuel_details,
+)
 from src.extractor import (
     ExtractionEngine,
     ExtractedPayload,
@@ -44,6 +49,8 @@ from src.formatters import (
     format_transaction_page,
     format_focus_task_embed,
     get_time_aware_greeting,
+    get_upcoming_malaysian_holidays,
+    format_fuel_receipt_embed,
     generate_html_report,
     render_progress_bar,
 )
@@ -1884,6 +1891,15 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
                     "status_line": f"{fulfilled_count}/{len(dca_progress)} Monthly DCA Commitments Met ✅"
                 }
 
+        # Check vehicle fuel subsidy tracking
+        fuel_impact_info = None
+        for exp in inserted_expenses:
+            f_info = classify_fuel_expense(exp["category"], exp.get("note"))
+            if f_info:
+                prior_liters = await db.get_monthly_ron95_liters(month_str)
+                fuel_impact_info = calculate_fuel_details(exp["amount"], f_info, prior_liters)
+                break
+
         confirmed_embed = format_action_confirmation(
             payload=payload,
             inserted_expenses=inserted_expenses,
@@ -1893,6 +1909,7 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             streak_info=streak_info,
             goal_update_info=goal_update_info,
             dca_impact_info=dca_impact_info,
+            fuel_impact_info=fuel_impact_info,
         )
 
         quick_undo_view = QuickUndoView(

@@ -7,3 +7,4 @@ python-dotenv>=1.0.1
 aiosqlite>=0.20.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+holidays>=0.103
