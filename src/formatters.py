@@ -3,6 +3,7 @@ import discord
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from src.extractor import ExtractedPayload, QueryScope
+from src.config import settings
 
 
 def render_progress_bar(current: float, limit: float, bar_length: int = 10) -> str:
@@ -767,32 +768,190 @@ def format_investments_overview(
 
 
 def format_goals_overview(goals: List[Dict[str, Any]]) -> discord.Embed:
-    """Build dedicated Savings Goals overview embed."""
+    """Build dedicated Savings Goals overview dashboard embed with subtask metrics."""
     embed = discord.Embed(
-        title="🎯 Savings Goals Overview",
-        description="Dedicated asset accumulation funds. Regular spending does NOT deduct from these targets!",
+        title="🎯 Savings Goals & Milestones Dashboard",
+        description="Dedicated asset accumulation funds & project milestones. Regular spending does NOT deduct from these targets!",
         color=discord.Color.gold(),
     )
     if not goals:
-        embed.description = "No active savings goals found. Create one by saying e.g. *'Create goal Japan Trip target RM 6000'*!"
+        embed.description = "No active savings goals found. Create one by saying e.g. *'Create goal Japan Trip target RM 6000'* or typing `/goal create`!"
         return embed
 
-    for g in goals:
-        bar = render_progress_bar(g["current_amount"], g["target_amount"])
-        target_d = f" | Target Date: `{g['target_date']}`" if g.get("target_date") else ""
-        embed.add_field(
-            name=f"🏆 [ID: #{g['id']}] {g['name']}{target_d}",
-            value=f"{bar}\nRemaining: **RM {g['remaining']:.2f}**\n",
-            inline=False,
-        )
-    return embed
+    category_emojis = {
+        "Travel": "✈️",
+        "Purchase": "💻",
+        "Gadget": "📱",
+        "Emergency": "🛡️",
+        "Education": "🎓",
+        "Vehicle": "🚗",
+        "Home": "🏠",
+        "Custom": "🎯",
+    }
 
     for g in goals:
+        cat = g.get("category", "Custom")
+        emoji = category_emojis.get(cat, "🎯")
         bar = render_progress_bar(g["current_amount"], g["target_amount"])
-        target_d = f" | Target Date: `{g['target_date']}`" if g.get("target_date") else ""
+        
+        target_d = ""
+        if g.get("target_date"):
+            try:
+                target_dt = datetime.strptime(g["target_date"], "%Y-%m-%d").date()
+                today = datetime.now(settings.tz).date()
+                delta = (target_dt - today).days
+                if delta > 0:
+                    target_d = f" | ⏳ `{delta}d left` (`{g['target_date']}`)"
+                elif delta == 0:
+                    target_d = " | 🎯 `Due Today!`"
+                else:
+                    target_d = f" | ⚠️ `{abs(delta)}d overdue`"
+            except Exception:
+                target_d = f" | Target: `{g['target_date']}`"
+
+        milestones_tag = ""
+        if "milestones_progress_ratio" in g:
+            milestones_tag = f" • Tasks: `{g['milestones_progress_ratio']}`"
+
         embed.add_field(
-            name=f"🏆 [ID: #{g['id']}] {g['name']}{target_d}",
-            value=f"{bar}\nRemaining: **RM {g['remaining']:.2f}**\n",
+            name=f"{emoji} [ID: #{g['id']}] {g['name']}{target_d}",
+            value=f"{bar}\nRemaining: **RM {g['remaining']:.2f}**{milestones_tag}\n",
+            inline=False,
+        )
+
+    embed.set_footer(text="Use /goals to drill into individual goal subtasks, log deposits, or check off items.")
+    return embed
+
+
+def format_rich_goal_detail_embed(goal: Dict[str, Any]) -> discord.Embed:
+    """Format an individual comprehensive Goal Card with visual progress and milestone subtasks."""
+    cat = goal.get("category", "Custom")
+    category_emojis = {
+        "Travel": "✈️",
+        "Purchase": "💻",
+        "Gadget": "📱",
+        "Emergency": "🛡️",
+        "Education": "🎓",
+        "Vehicle": "🚗",
+        "Home": "🏠",
+        "Custom": "🎯",
+    }
+    emoji = category_emojis.get(cat, "🎯")
+    curr = goal.get("current_amount", 0.0)
+    target = goal.get("target_amount", 0.0)
+    pct = goal.get("percentage", round((curr / target) * 100, 1) if target > 0 else 0.0)
+    rem = goal.get("remaining", max(round(target - curr, 2), 0.0))
+
+    is_completed = goal.get("is_completed", 0)
+    color = discord.Color.green() if is_completed else discord.Color.gold()
+    title_prefix = "🎉 [COMPLETED] " if is_completed else ""
+
+    embed = discord.Embed(
+        title=f"{title_prefix}{emoji} Goal: {goal['name']} (ID: #{goal['id']})",
+        color=color,
+    )
+
+    bar = render_progress_bar(curr, target)
+    desc_lines = [
+        f"**Category**: `{cat}`",
+        f"{bar}",
+        f"Saved: **RM {curr:.2f}** / **RM {target:.2f}** ({pct}%) • Remaining: **RM {rem:.2f}**",
+    ]
+
+    # Target Date Countdown with safe exception handling
+    if goal.get("target_date"):
+        try:
+            target_dt = datetime.strptime(goal["target_date"], "%Y-%m-%d").date()
+            today = datetime.now(settings.tz).date()
+            days_left = (target_dt - today).days
+            if is_completed:
+                desc_lines.append(f"🎯 Target Date: `{goal['target_date']}`")
+            elif days_left > 0:
+                desc_lines.append(f"⏳ **{days_left} days remaining** (Target: `{goal['target_date']}`)")
+            elif days_left == 0:
+                desc_lines.append(f"🎯 **Target date is TODAY!** (`{goal['target_date']}`)")
+            else:
+                desc_lines.append(f"⚠️ **{abs(days_left)} days past target date** (`{goal['target_date']}`)")
+        except Exception:
+            desc_lines.append(f"🎯 Target Date: `{goal['target_date']}`")
+
+    if goal.get("notes"):
+        desc_lines.append(f"\n💡 **Strategy / Notes**: {goal['notes']}")
+
+    embed.description = "\n".join(desc_lines)
+
+    # Milestone Checklist
+    milestones = goal.get("milestones", [])
+    if milestones:
+        m_lines = []
+        for m in milestones:
+            box = "✅" if m.get("is_completed") else "⬜"
+            cost_tag = f" _(RM {m['estimated_cost']:.2f})_" if m.get("estimated_cost") else ""
+            exp_link = f" • _Linked to Expense #{m['expense_id']}_" if m.get("expense_id") else ""
+            m_lines.append(f"{box} **{m['sort_order']}. {m['title']}**{cost_tag}{exp_link}")
+
+        comp_count = sum(1 for m in milestones if m.get("is_completed"))
+        embed.add_field(
+            name=f"📋 Action Checklist ({comp_count}/{len(milestones)} Completed)",
+            value="\n".join(m_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📋 Action Checklist",
+            value="*No subtasks linked yet. Tap [➕ Add Subtask] below to add one!*",
+            inline=False,
+        )
+
+    embed.set_footer(text="Tap buttons below to deposit savings, toggle tasks, or edit.")
+    return embed
+
+
+def format_goal_wizard_preview_embed(state_dict: Dict[str, Any]) -> discord.Embed:
+    """Format structured review proposal card at the conclusion of the Goal Creation Wizard."""
+    name = state_dict.get("goal_name", "New Goal")
+    cat = state_dict.get("goal_category", "Custom")
+    target = float(state_dict.get("target_amount", 0.0) or 0.0)
+    target_d = state_dict.get("target_date") or state_dict.get("target_date_human") or "Flexible"
+    notes = state_dict.get("notes", "")
+    milestones = state_dict.get("milestones") or []
+
+    embed = discord.Embed(
+        title=f"📋 Goal Blueprint Review: {name}",
+        description=f"Here is your personalized goal plan tailored by Perlica:\n\n"
+                    f"• **Category**: `{cat}`\n"
+                    f"• **Target Budget**: **RM {target:.2f}**\n"
+                    f"• **Target Timeline**: `{target_d}`",
+        color=discord.Color.blue(),
+    )
+
+    if notes:
+        embed.add_field(name="💡 Strategy & Details", value=notes, inline=False)
+
+    if milestones:
+        m_lines = []
+        for idx, m in enumerate(milestones, start=1):
+            cost = f" (Est. RM {m['estimated_cost']:.2f})" if m.get("estimated_cost") else ""
+            m_lines.append(f"`{idx}.` {m['title']}{cost}")
+        embed.add_field(name="📋 Action Milestones (Subtasks)", value="\n".join(m_lines), inline=False)
+
+    embed.set_footer(text="Review the blueprint above. Click [✅ Create Goal] to save, or [➕ Add Subtask] to customize!")
+    return embed
+
+
+def format_goal_disambiguation_embed(matched_goals: List[Dict[str, Any]], deposit_amount: float) -> discord.Embed:
+    """Format interactive 1-tap disambiguation card when user query matches multiple goals."""
+    embed = discord.Embed(
+        title="🎯 Select Goal for Savings Deposit",
+        description=f"Multiple active goals matched your request for **RM {deposit_amount:.2f}**.\n"
+                    f"Please select which goal ledger you want to contribute to:",
+        color=discord.Color.gold(),
+    )
+    for g in matched_goals[:5]:
+        bar = render_progress_bar(g["current_amount"], g["target_amount"])
+        embed.add_field(
+            name=f"🏆 #{g['id']} {g['name']} (`{g.get('category', 'Custom')}`)",
+            value=f"{bar}\nSaved: **RM {g['current_amount']:.2f} / RM {g['target_amount']:.2f}**",
             inline=False,
         )
     return embed

@@ -278,6 +278,18 @@ class ExtractedPayload(BaseModel):
         default=None,
         description="Monetary amount deposited/saved toward the goal as a positive number (e.g. 500.0).",
     )
+    goal_deposit_query: Optional[str] = Field(
+        default=None,
+        description="Raw goal text query or goal name if goal ID is ambiguous (e.g. 'Japan', 'MacBook').",
+    )
+    goal_milestone_completed_title: Optional[str] = Field(
+        default=None,
+        description="Title of goal subtask/milestone being marked complete (e.g. 'flight tickets', 'hotel booking').",
+    )
+    goal_milestone_goal_id: Optional[int] = Field(
+        default=None,
+        description="Goal ID associated with the completed milestone if known.",
+    )
     delete_goal_id: Optional[int] = Field(
         default=None,
         description="Exact integer ID of savings goal to delete.",
@@ -384,12 +396,14 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - Only set needs_clarification=True if the message contains ONLY a raw number with NO context or vendor (e.g. "Spent 50", "Paid 30").
    - If an item or vendor is present (e.g. "recurring buy $100 worth of s&p500 on the 27th"), set needs_clarification=False and extract all fields.
 
-4. SAVINGS GOALS RULES (CRITICAL):
-   - Savings goals are dedicated asset accumulation funds (e.g. Japan trip, emergency fund).
-   - Standard expenses (food, transport, shopping) NEVER deduct from savings goals!
-   - "saving for japan trip and i need 6k" or "create goal Japan Trip target 6000": set goal_create_name="Japan Trip", goal_create_target=6000.0.
-   - "saved RM 500 for japan trip" or "put 300 to japan fund" or "add 500 to my savings goal":
-     Match exact Goal ID from ACTIVE SAVINGS GOALS IN DATABASE. Set goal_deposit_id=<matched_id>, goal_deposit_amount=<amount>. If only 1 goal exists in database, use its ID.
+4. SAVINGS GOALS & MILESTONES RULES (CRITICAL):
+   - Savings goals are dedicated asset accumulation funds (e.g. Japan trip, MacBook fund).
+   - "saved RM 500 for japan trip" or "put 300 to macbook fund":
+     Match exact Goal ID from ACTIVE SAVINGS GOALS. Set goal_deposit_id=<matched_id>, goal_deposit_amount=<amount>. If goal name cannot be uniquely identified, set goal_deposit_query="japan", goal_deposit_amount=500.0.
+   - "I bought flight tickets for Japan for RM 1800" or "paid 2000 for Tokyo hotel booking":
+     Extract as an Expense (amount=1800.0, category=ExpenseCategory.TRAVEL, note="Flight tickets for Japan") AND set goal_milestone_completed_title="flight tickets", goal_milestone_goal_id=<matched_id>.
+   - "I've booked flight tickets for Japan" (without monetary amount):
+     Set goal_milestone_completed_title="flight tickets", goal_milestone_goal_id=<matched_id>.
 
 5. RECURRING BILLS & INVESTMENTS EXAMPLES:
    - "recurring buy $100 worth of s&p500 on the 27th on every month":

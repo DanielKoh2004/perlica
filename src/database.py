@@ -172,11 +172,41 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS goals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
+                    category TEXT DEFAULT 'Custom',
                     target_amount REAL NOT NULL,
                     current_amount REAL DEFAULT 0.0,
                     target_date TEXT,
+                    notes TEXT,
+                    metadata_json TEXT,
                     is_completed INTEGER DEFAULT 0,
+                    completed_at TEXT,
                     created_at TEXT NOT NULL
+                );
+                """
+            )
+            # 5b. Goal Milestones & Subtasks Table (Linked to goals, optional expense linkage)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goal_milestones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    estimated_cost REAL DEFAULT 0.0,
+                    expense_id INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
+                    is_completed INTEGER DEFAULT 0,
+                    completed_at TEXT,
+                    sort_order INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            # 5c. Goal Creation Wizard Sessions Table (SQLite-persisted multi-turn interview state)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goal_wizard_sessions (
+                    user_id INTEGER PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -213,11 +243,25 @@ class DatabaseManager:
                 if "recurring_bill_id" not in exp_cols:
                     await conn.execute("ALTER TABLE expenses ADD COLUMN recurring_bill_id INTEGER;")
 
+            # Auto-migration for goals table columns (Rich Goal Section & Notes)
+            async with conn.execute("PRAGMA table_info(goals);") as cursor:
+                goal_cols = [row["name"] for row in await cursor.fetchall()]
+                if "category" not in goal_cols:
+                    await conn.execute("ALTER TABLE goals ADD COLUMN category TEXT DEFAULT 'Custom';")
+                if "notes" not in goal_cols:
+                    await conn.execute("ALTER TABLE goals ADD COLUMN notes TEXT;")
+                if "metadata_json" not in goal_cols:
+                    await conn.execute("ALTER TABLE goals ADD COLUMN metadata_json TEXT;")
+                if "completed_at" not in goal_cols:
+                    await conn.execute("ALTER TABLE goals ADD COLUMN completed_at TEXT;")
+
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_created ON expenses(created_at);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_asset ON expenses(asset_name);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_milestone_key ON user_milestones(milestone_key);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_goal_milestones_goal ON goal_milestones(goal_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_goal_milestones_expense ON goal_milestones(expense_id);")
 
             # --- KNOWLEDGE & CODEBASE COPILOT SCHEMA ---
 
@@ -1420,32 +1464,126 @@ class DatabaseManager:
 
     # --- SAVINGS GOALS (ISOLATED ASSET ACCUMULATION) ---
 
+    # --- SAVINGS GOALS & DYNAMIC MILESTONES (ISOLATED ASSET ACCUMULATION) ---
+
     async def create_goal(
         self,
         name: str,
         target_amount: float,
         current_amount: float = 0.0,
         target_date: Optional[str] = None,
+        category: str = "Custom",
+        notes: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         created_at: str = "",
     ) -> int:
-        """Create a dedicated savings goal."""
+        """Create a dedicated savings goal with category, notes, and metadata."""
+        if not created_at:
+            created_at = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        metadata_str = json.dumps(metadata) if metadata else None
         async with self.get_connection() as conn:
             cur = await conn.execute(
                 """
-                INSERT INTO goals (name, target_amount, current_amount, target_date, is_completed, created_at)
-                VALUES (?, ?, ?, ?, 0, ?)
+                INSERT INTO goals (name, category, target_amount, current_amount, target_date, notes, metadata_json, is_completed, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                 """,
-                (name, round(target_amount, 2), round(current_amount, 2), target_date, created_at),
+                (name, category, round(target_amount, 2), round(current_amount, 2), target_date, notes, metadata_str, created_at),
             )
             await conn.commit()
             return cur.lastrowid
 
+    async def create_goal_with_milestones(
+        self,
+        name: str,
+        target_amount: float,
+        current_amount: float = 0.0,
+        target_date: Optional[str] = None,
+        category: str = "Custom",
+        notes: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        milestones: Optional[List[Dict[str, Any]]] = None,
+        created_at: str = "",
+    ) -> int:
+        """Atomically create a goal along with its initial structured action milestones."""
+        if not created_at:
+            created_at = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        metadata_str = json.dumps(metadata) if metadata else None
+
+        async with self.get_connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO goals (name, category, target_amount, current_amount, target_date, notes, metadata_json, is_completed, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                """,
+                (name, category, round(target_amount, 2), round(current_amount, 2), target_date, notes, metadata_str, created_at),
+            )
+            goal_id = cur.lastrowid
+
+            if milestones:
+                for idx, m in enumerate(milestones, start=1):
+                    m_title = m.get("title") or m.get("name") or "Milestone"
+                    m_cost = float(m.get("estimated_cost", 0.0) or 0.0)
+                    m_done = 1 if m.get("is_completed") else 0
+                    m_done_at = created_at if m_done else None
+                    await conn.execute(
+                        """
+                        INSERT INTO goal_milestones (goal_id, title, estimated_cost, is_completed, completed_at, sort_order, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (goal_id, m_title, round(m_cost, 2), m_done, m_done_at, idx, created_at),
+                    )
+
+            await conn.commit()
+            return goal_id
+
     async def get_goal_by_id(self, goal_id: int) -> Optional[Dict[str, Any]]:
-        """Fetch a savings goal by its exact integer ID."""
+        """Fetch a savings goal by its exact integer ID with progress metrics."""
         async with self.get_connection() as conn:
             async with conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)) as cur:
                 row = await cur.fetchone()
-                return dict(row) if row else None
+                if not row:
+                    return None
+                g = dict(row)
+                target = g["target_amount"]
+                curr = g["current_amount"]
+                pct = round((curr / target) * 100, 1) if target > 0 else 0.0
+                rem = max(round(target - curr, 2), 0.0)
+                g["percentage"] = min(pct, 100.0)
+                g["remaining"] = rem
+                if g.get("metadata_json"):
+                    try:
+                        g["metadata"] = json.loads(g["metadata_json"])
+                    except Exception:
+                        g["metadata"] = {}
+                else:
+                    g["metadata"] = {}
+                return g
+
+    async def get_goal_with_milestones(self, goal_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch goal details and all its linked milestones ordered by sort_order."""
+        goal = await self.get_goal_by_id(goal_id)
+        if not goal:
+            return None
+
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT gm.*, e.category as expense_category, e.amount as expense_amount, e.note as expense_note
+                FROM goal_milestones gm
+                LEFT JOIN expenses e ON gm.expense_id = e.id
+                WHERE gm.goal_id = ?
+                ORDER BY gm.sort_order ASC, gm.id ASC
+                """,
+                (goal_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+                goal["milestones"] = [dict(r) for r in rows]
+                completed_count = sum(1 for m in goal["milestones"] if m["is_completed"])
+                total_count = len(goal["milestones"])
+                goal["milestones_completed_count"] = completed_count
+                goal["milestones_total_count"] = total_count
+                goal["milestones_progress_ratio"] = f"{completed_count}/{total_count}" if total_count > 0 else "0/0"
+                return goal
 
     async def get_active_goals(self) -> List[Dict[str, Any]]:
         """List active savings goals with progress calculations."""
@@ -1463,8 +1601,63 @@ class DatabaseManager:
                     rem = max(round(target - curr, 2), 0.0)
                     g["percentage"] = min(pct, 100.0)
                     g["remaining"] = rem
+                    if g.get("metadata_json"):
+                        try:
+                            g["metadata"] = json.loads(g["metadata_json"])
+                        except Exception:
+                            g["metadata"] = {}
+                    else:
+                        g["metadata"] = {}
                     goals.append(g)
                 return goals
+
+    async def get_active_goals_with_milestones(self, include_completed: bool = False) -> List[Dict[str, Any]]:
+        """List all goals with their linked milestones attached."""
+        condition = "" if include_completed else "WHERE is_completed = 0"
+        async with self.get_connection() as conn:
+            async with conn.execute(f"SELECT id FROM goals {condition} ORDER BY id ASC") as cur:
+                rows = await cur.fetchall()
+                goal_ids = [r["id"] for r in rows]
+
+        results = []
+        for gid in goal_ids:
+            g = await self.get_goal_with_milestones(gid)
+            if g:
+                results.append(g)
+        return results
+
+    async def update_goal_details(
+        self,
+        goal_id: int,
+        name: Optional[str] = None,
+        target_amount: Optional[float] = None,
+        target_date: Optional[str] = None,
+        category: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update core metadata and target parameters of a goal."""
+        goal = await self.get_goal_by_id(goal_id)
+        if not goal:
+            return None
+
+        new_name = name.strip() if name else goal["name"]
+        new_target = round(target_amount, 2) if target_amount is not None else goal["target_amount"]
+        new_date = target_date if target_date is not None else goal["target_date"]
+        new_cat = category.strip() if category else goal.get("category", "Custom")
+        new_notes = notes.strip() if notes is not None else goal.get("notes")
+        is_done = 1 if goal["current_amount"] >= new_target else 0
+
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE goals
+                SET name = ?, target_amount = ?, target_date = ?, category = ?, notes = ?, is_completed = ?
+                WHERE id = ?
+                """,
+                (new_name, new_target, new_date, new_cat, new_notes, is_done, goal_id),
+            )
+            await conn.commit()
+        return await self.get_goal_with_milestones(goal_id)
 
     async def deposit_to_goal(self, goal_id: int, amount: float) -> Optional[Dict[str, Any]]:
         """
@@ -1477,19 +1670,17 @@ class DatabaseManager:
 
         new_amt = round(goal["current_amount"] + amount, 2)
         is_done = 1 if new_amt >= goal["target_amount"] else 0
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        completed_at = now_str if (is_done and not goal.get("completed_at")) else goal.get("completed_at")
 
         async with self.get_connection() as conn:
             await conn.execute(
-                "UPDATE goals SET current_amount = ?, is_completed = ? WHERE id = ?",
-                (new_amt, is_done, goal_id),
+                "UPDATE goals SET current_amount = ?, is_completed = ?, completed_at = ? WHERE id = ?",
+                (new_amt, is_done, completed_at, goal_id),
             )
             await conn.commit()
 
-        updated = await self.get_goal_by_id(goal_id)
-        if updated:
-            updated["percentage"] = round((updated["current_amount"] / updated["target_amount"]) * 100, 1)
-            updated["remaining"] = max(round(updated["target_amount"] - updated["current_amount"], 2), 0.0)
-        return updated
+        return await self.get_goal_with_milestones(goal_id)
 
     async def revert_goal_deposit(self, goal_id: int, amount: float) -> Optional[Dict[str, Any]]:
         """Revert / rollback a specific savings deposit."""
@@ -1498,23 +1689,228 @@ class DatabaseManager:
             return None
         new_amt = max(0.0, round(goal["current_amount"] - amount, 2))
         is_done = 1 if new_amt >= goal["target_amount"] else 0
+        completed_at = goal.get("completed_at") if is_done else None
         async with self.get_connection() as conn:
             await conn.execute(
-                "UPDATE goals SET current_amount = ?, is_completed = ? WHERE id = ?",
-                (new_amt, is_done, goal_id),
+                "UPDATE goals SET current_amount = ?, is_completed = ?, completed_at = ? WHERE id = ?",
+                (new_amt, is_done, completed_at, goal_id),
             )
             await conn.commit()
-        return await self.get_goal_by_id(goal_id)
+        return await self.get_goal_with_milestones(goal_id)
+
+    async def add_goal_milestone(
+        self,
+        goal_id: int,
+        title: str,
+        estimated_cost: float = 0.0,
+        sort_order: Optional[int] = None,
+    ) -> int:
+        """Add an actionable milestone / subtask to a goal."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            if sort_order is None:
+                async with conn.execute("SELECT MAX(sort_order) as max_ord FROM goal_milestones WHERE goal_id = ?", (goal_id,)) as cur:
+                    row = await cur.fetchone()
+                    sort_order = (row["max_ord"] or 0) + 1
+
+            cur = await conn.execute(
+                """
+                INSERT INTO goal_milestones (goal_id, title, estimated_cost, is_completed, sort_order, created_at)
+                VALUES (?, ?, ?, 0, ?, ?)
+                """,
+                (goal_id, title.strip(), round(estimated_cost, 2), sort_order, now_str),
+            )
+            await conn.commit()
+            return cur.lastrowid
+
+    async def toggle_goal_milestone(self, milestone_id: int, is_completed: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Toggle or set milestone completed state."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM goal_milestones WHERE id = ?", (milestone_id,)) as cur:
+                m = await cur.fetchone()
+                if not m:
+                    return None
+                m_dict = dict(m)
+
+            if is_completed is None:
+                new_state = 0 if m_dict["is_completed"] else 1
+            else:
+                new_state = 1 if is_completed else 0
+
+            now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+            done_at = now_str if new_state else None
+
+            await conn.execute(
+                "UPDATE goal_milestones SET is_completed = ?, completed_at = ? WHERE id = ?",
+                (new_state, done_at, milestone_id),
+            )
+            await conn.commit()
+
+            async with conn.execute("SELECT * FROM goal_milestones WHERE id = ?", (milestone_id,)) as c2:
+                updated = await c2.fetchone()
+                return dict(updated) if updated else None
+
+    async def complete_milestone_with_expense(
+        self,
+        milestone_id: int,
+        expense_id: int,
+        completed_at: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Mark a milestone as completed and link its foreign key expense_id.
+        Prevents double-counting between OPEX outflow and sinking fund goals.
+        """
+        if not completed_at:
+            completed_at = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE goal_milestones
+                SET is_completed = 1, expense_id = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (expense_id, completed_at, milestone_id),
+            )
+            await conn.commit()
+
+            async with conn.execute("SELECT * FROM goal_milestones WHERE id = ?", (milestone_id,)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def delete_goal_milestone(self, milestone_id: int) -> bool:
+        """Delete a single goal milestone."""
+        async with self.get_connection() as conn:
+            cur = await conn.execute("DELETE FROM goal_milestones WHERE id = ?", (milestone_id,))
+            await conn.commit()
+            return cur.rowcount > 0
 
     async def delete_goal(self, goal_id: int) -> Optional[Dict[str, Any]]:
-        """Delete a savings goal."""
-        g = await self.get_goal_by_id(goal_id)
+        """Delete a savings goal and its cascading milestones."""
+        g = await self.get_goal_with_milestones(goal_id)
         if not g:
             return None
         async with self.get_connection() as conn:
             await conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
             await conn.commit()
         return g
+
+    async def resolve_goal_by_name_or_query(self, query_text: str) -> Tuple[str, Any]:
+        """
+        Deterministically resolve user query against active goals.
+        Returns:
+            ("EXACT", goal_dict) if 100% case-insensitive exact name match
+            ("SINGLE", goal_dict) if single confident token containment match
+            ("AMBIGUOUS", list_of_goal_dicts) if multiple matching candidate goals
+            ("NONE", None) if no active goals match
+        """
+        active_goals = await self.get_active_goals_with_milestones()
+        if not active_goals:
+            return "NONE", None
+
+        clean_q = query_text.strip().lower()
+        if not clean_q:
+            return "NONE", None
+
+        # 1. Exact Name Match
+        for g in active_goals:
+            if g["name"].strip().lower() == clean_q:
+                return "EXACT", g
+
+        # 2. Token Containment Matches
+        q_tokens = [t for t in re.split(r'\W+', clean_q) if len(t) > 2]
+        matching_goals = []
+        for g in active_goals:
+            g_name_lower = g["name"].lower()
+            if clean_q in g_name_lower or g_name_lower in clean_q:
+                matching_goals.append(g)
+                continue
+            if any(t in g_name_lower for t in q_tokens):
+                matching_goals.append(g)
+
+        # Deduplicate
+        seen_ids = set()
+        unique_matches = []
+        for g in matching_goals:
+            if g["id"] not in seen_ids:
+                seen_ids.add(g["id"])
+                unique_matches.append(g)
+
+        if len(unique_matches) == 1:
+            return "SINGLE", unique_matches[0]
+        elif len(unique_matches) > 1:
+            return "AMBIGUOUS", unique_matches
+
+        return "NONE", None
+
+    # --- GOAL CREATION WIZARD SESSIONS (SQLITE-PERSISTED MULTI-TURN STATE) ---
+
+    async def save_wizard_session(self, user_id: int, state_dict: Dict[str, Any]) -> None:
+        """Upsert active multi-turn goal creation interview session state."""
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        state_json = json.dumps(state_dict)
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO goal_wizard_sessions (user_id, state_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, state_json, now_str),
+            )
+            await conn.commit()
+
+    async def get_wizard_session(self, user_id: int, max_age_seconds: int = 900) -> Optional[Dict[str, Any]]:
+        """Fetch active wizard session if not expired (default 15 minutes limit)."""
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM goal_wizard_sessions WHERE user_id = ?", (user_id,)) as cur:
+                row = await cur.fetchone()
+                if not row:
+                    return None
+
+                updated_str = row["updated_at"]
+                try:
+                    updated_dt = datetime.strptime(updated_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=settings.tz)
+                    age = (datetime.now(settings.tz) - updated_dt).total_seconds()
+                    if age > max_age_seconds:
+                        await conn.execute("DELETE FROM goal_wizard_sessions WHERE user_id = ?", (user_id,))
+                        await conn.commit()
+                        return None
+                except Exception:
+                    pass
+
+                try:
+                    return json.loads(row["state_json"])
+                except Exception:
+                    return None
+
+    async def delete_wizard_session(self, user_id: int) -> None:
+        """Delete an active wizard session upon completion or cancellation."""
+        async with self.get_connection() as conn:
+            await conn.execute("DELETE FROM goal_wizard_sessions WHERE user_id = ?", (user_id,))
+            await conn.commit()
+
+    async def cleanup_expired_wizard_sessions(self, max_age_seconds: int = 900) -> int:
+        """Garbage-collect all stale wizard sessions exceeding timeout threshold."""
+        async with self.get_connection() as conn:
+            cur = await conn.execute("SELECT user_id, updated_at FROM goal_wizard_sessions")
+            rows = await cur.fetchall()
+            expired_ids = []
+            now_dt = datetime.now(settings.tz)
+            for r in rows:
+                try:
+                    dt = datetime.strptime(r["updated_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=settings.tz)
+                    if (now_dt - dt).total_seconds() > max_age_seconds:
+                        expired_ids.append(r["user_id"])
+                except Exception:
+                    expired_ids.append(r["user_id"])
+
+            if expired_ids:
+                placeholders = ",".join("?" * len(expired_ids))
+                await conn.execute(f"DELETE FROM goal_wizard_sessions WHERE user_id IN ({placeholders})", tuple(expired_ids))
+                await conn.commit()
+            return len(expired_ids)
 
     # --- ATOMIC ROLLBACK / QUICK UNDO HELPERS ---
 

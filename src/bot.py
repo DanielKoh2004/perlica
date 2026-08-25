@@ -493,43 +493,344 @@ class BillCustomAmountModal(discord.ui.Modal, title="✏️ Custom Payment Amoun
             await interaction.followup.send(embed=format_milestone_celebration(m))
 
 
-class GoalsDashboardView(discord.ui.View):
-    """Interactive view for /goals with 1-tap deposit dropdown and creation modal."""
+class AddGoalMilestoneModal(discord.ui.Modal, title="➕ Add Subtask to Goal"):
+    """Modal to add a subtask / milestone to an existing goal."""
 
-    def __init__(self, goals: List[Dict[str, Any]]):
+    def __init__(self, goal_id: int, on_complete_cb: Optional[Any] = None):
+        super().__init__()
+        self.goal_id = goal_id
+        self.on_complete_cb = on_complete_cb
+        self.title_input = discord.ui.TextInput(
+            label="Subtask Title",
+            placeholder="e.g. Book return flights, Reserve hotel, Buy case",
+            required=True,
+            max_length=150,
+        )
+        self.cost_input = discord.ui.TextInput(
+            label="Estimated Sub-Budget (Optional RM)",
+            placeholder="e.g. 1800.00",
+            required=False,
+            max_length=20,
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.cost_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title = self.title_input.value.strip()
+        cost = clean_float_input(self.cost_input.value, default=0.0)
+        await db.add_goal_milestone(self.goal_id, title=title, estimated_cost=cost)
+        updated_goal = await db.get_goal_with_milestones(self.goal_id)
+        if updated_goal and self.on_complete_cb:
+            await self.on_complete_cb(interaction, updated_goal)
+        else:
+            await interaction.response.send_message(f"✅ Added subtask **{title}** to Goal #{self.goal_id}!", ephemeral=True)
+
+
+class EditGoalModal(discord.ui.Modal, title="✏️ Edit Goal Parameters"):
+    """Modal to edit target amount, date, notes, or category of a goal."""
+
+    def __init__(self, goal: Dict[str, Any], on_complete_cb: Optional[Any] = None):
+        super().__init__()
+        self.goal_id = goal["id"]
+        self.on_complete_cb = on_complete_cb
+        self.name_input = discord.ui.TextInput(
+            label="Goal Name",
+            default=goal["name"],
+            required=True,
+            max_length=100,
+        )
+        self.target_input = discord.ui.TextInput(
+            label="Target Amount (RM)",
+            default=f"{goal['target_amount']:.2f}",
+            required=True,
+            max_length=20,
+        )
+        self.date_input = discord.ui.TextInput(
+            label="Target Date (YYYY-MM-DD)",
+            default=goal.get("target_date") or "",
+            required=False,
+            max_length=20,
+        )
+        self.notes_input = discord.ui.TextInput(
+            label="Strategy Notes",
+            default=goal.get("notes") or "",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=300,
+        )
+        self.add_item(self.name_input)
+        self.add_item(self.target_input)
+        self.add_item(self.date_input)
+        self.add_item(self.notes_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.name_input.value.strip()
+        target = clean_float_input(self.target_input.value, default=0.0)
+        target_d = self.date_input.value.strip() or None
+        notes = self.notes_input.value.strip() or None
+        updated = await db.update_goal_details(self.goal_id, name=name, target_amount=target, target_date=target_d, notes=notes)
+        if updated and self.on_complete_cb:
+            await self.on_complete_cb(interaction, updated)
+        else:
+            await interaction.response.send_message(f"✅ Updated Goal #{self.goal_id} parameters!", ephemeral=True)
+
+
+class AddCustomTaskToWizardModal(discord.ui.Modal, title="➕ Add Subtask to Blueprint"):
+    """Modal to add an extra subtask during the Goal Creation Wizard review step."""
+
+    def __init__(self, user_id: int, on_complete_cb: Any):
+        super().__init__()
+        self.user_id = user_id
+        self.on_complete_cb = on_complete_cb
+        self.title_input = discord.ui.TextInput(
+            label="Custom Subtask Title",
+            placeholder="e.g. Apply for visa, Buy travel insurance",
+            required=True,
+            max_length=150,
+        )
+        self.cost_input = discord.ui.TextInput(
+            label="Estimated Sub-Budget (Optional RM)",
+            placeholder="e.g. 300.00",
+            required=False,
+            max_length=20,
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.cost_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        title = self.title_input.value.strip()
+        cost = clean_float_input(self.cost_input.value, default=0.0)
+        session = await db.get_wizard_session(self.user_id)
+        if session:
+            milestones = session.get("milestones", [])
+            milestones.append({"title": title, "estimated_cost": cost, "is_completed": False})
+            session["milestones"] = milestones
+            await db.save_wizard_session(self.user_id, session)
+            await self.on_complete_cb(interaction, session)
+        else:
+            await interaction.response.send_message("Session expired.", ephemeral=True)
+
+
+class GoalWizardReviewView(discord.ui.View):
+    """Review & confirmation view for AI-generated Goal Blueprint."""
+
+    def __init__(self, user_id: int, state_dict: Dict[str, Any], db_manager: Any):
+        super().__init__(timeout=900.0)
+        self.user_id = user_id
+        self.state_dict = state_dict
+        self.db = db_manager
+
+    @discord.ui.button(label="Create Goal", style=discord.ButtonStyle.success, emoji="✅", custom_id="perlica:wizard:confirm")
+    async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now_str = datetime.datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        gid = await self.db.create_goal_with_milestones(
+            name=self.state_dict.get("goal_name", "Goal"),
+            category=self.state_dict.get("goal_category", "Custom"),
+            target_amount=float(self.state_dict.get("target_amount", 0.0) or 0.0),
+            target_date=self.state_dict.get("target_date"),
+            notes=self.state_dict.get("notes"),
+            metadata=self.state_dict.get("metadata"),
+            milestones=self.state_dict.get("milestones"),
+            created_at=now_str,
+        )
+        await self.db.delete_wizard_session(self.user_id)
+        goal_data = await self.db.get_goal_with_milestones(gid)
+        embed = format_rich_goal_detail_embed(goal_data)
+        all_goals = await self.db.get_active_goals_with_milestones()
+        view = GoalExplorerView(goals=all_goals, current_goal_id=gid, db_manager=self.db)
+        await interaction.response.edit_message(content=f"🎉 **Goal #{gid} Successfully Created!**", embed=embed, view=view)
+
+    @discord.ui.button(label="Add Subtask", style=discord.ButtonStyle.primary, emoji="➕", custom_id="perlica:wizard:add_subtask")
+    async def on_add_subtask(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async def on_subtask_added(inter: discord.Interaction, updated_session: Dict[str, Any]):
+            self.state_dict = updated_session
+            embed = format_goal_wizard_preview_embed(updated_session)
+            await inter.response.edit_message(embed=embed, view=self)
+
+        await interaction.response.send_modal(AddCustomTaskToWizardModal(user_id=self.user_id, on_complete_cb=on_subtask_added))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌", custom_id="perlica:wizard:cancel")
+    async def on_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.db.delete_wizard_session(self.user_id)
+        await interaction.response.edit_message(content="❌ **Goal planning session cancelled.**", embed=None, view=None)
+
+
+class GoalExplorerView(discord.ui.View):
+    """Interactive Goal Explorer with drilldown, checklist toggling, deposits, and AI wizard."""
+
+    def __init__(self, goals: List[Dict[str, Any]], current_goal_id: Optional[int] = None, db_manager: Any = None):
         super().__init__(timeout=None)
         self.goals = goals
+        self.current_goal_id = current_goal_id or (goals[0]["id"] if goals else None)
+        self.db = db_manager
+        self._rebuild_items()
 
-        if goals:
-            options = [
-                discord.SelectOption(
-                    label=f"{g['name'][:25]} (RM {g['current_amount']:.0f}/{g['target_amount']:.0f})",
-                    value=str(g["id"]),
-                    description=f"{g['percentage']}% funded | RM {g['remaining']:.2f} left",
-                    emoji="🎯",
+    def _rebuild_items(self):
+        self.clear_items()
+        if self.goals:
+            options = []
+            for g in self.goals[:25]:
+                cat = g.get("category", "Custom")
+                pct = g.get("percentage", 0.0)
+                is_selected = (g["id"] == self.current_goal_id)
+                options.append(
+                    discord.SelectOption(
+                        label=f"#{g['id']} {g['name'][:20]} ({pct}%)",
+                        value=str(g["id"]),
+                        description=f"RM {g['current_amount']:.0f}/{g['target_amount']:.0f} • {cat}",
+                        emoji="🎯",
+                        default=is_selected,
+                    )
                 )
-                for g in goals[:25]
-            ]
+
             select = discord.ui.Select(
-                placeholder="➕ Select a goal to deposit savings into...",
+                placeholder="🎯 Select a goal to inspect details & subtasks...",
                 options=options,
-                custom_id="perlica:goals:select_dep",
-                min_values=1,
-                max_values=1,
+                custom_id="perlica:goal:explorer:select",
+                row=0,
             )
 
-            async def on_select_goal(interaction: discord.Interaction):
-                gid = int(select.values[0])
-                target_g = next((g for g in goals if g["id"] == gid), None)
-                gname = target_g["name"] if target_g else "Savings Goal"
-                await interaction.response.send_modal(GoalDepositModal(goal_id=gid, goal_name=gname))
+            async def on_goal_selected(interaction: discord.Interaction):
+                self.current_goal_id = int(select.values[0])
+                goal_data = await self.db.get_goal_with_milestones(self.current_goal_id)
+                self.goals = await self.db.get_active_goals_with_milestones()
+                self._rebuild_items()
+                embed = format_rich_goal_detail_embed(goal_data)
+                await interaction.response.edit_message(embed=embed, view=self)
 
-            select.callback = on_select_goal
+            select.callback = on_goal_selected
             self.add_item(select)
 
-    @discord.ui.button(label="Create New Goal", style=discord.ButtonStyle.success, emoji="🏆", custom_id="perlica:btn:create_goal")
-    async def create_goal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(GoalCreateModal())
+        # Action Buttons row 1
+        if self.current_goal_id:
+            dep_btn = discord.ui.Button(label="Log Deposit", style=discord.ButtonStyle.success, emoji="💰", custom_id=f"perlica:goal:dep:{self.current_goal_id}", row=1)
+
+            async def dep_cb(interaction: discord.Interaction):
+                target_g = await self.db.get_goal_by_id(self.current_goal_id)
+                gname = target_g["name"] if target_g else "Goal"
+                await interaction.response.send_modal(GoalDepositModal(goal_id=self.current_goal_id, goal_name=gname))
+
+            dep_btn.callback = dep_cb
+            self.add_item(dep_btn)
+
+            subtask_btn = discord.ui.Button(label="Add Subtask", style=discord.ButtonStyle.primary, emoji="➕", custom_id=f"perlica:goal:add_task:{self.current_goal_id}", row=1)
+
+            async def add_task_cb(interaction: discord.Interaction):
+                async def on_task_added(inter: discord.Interaction, updated_goal: Dict[str, Any]):
+                    self.goals = await self.db.get_active_goals_with_milestones()
+                    self._rebuild_items()
+                    embed = format_rich_goal_detail_embed(updated_goal)
+                    await inter.response.edit_message(embed=embed, view=self)
+
+                await interaction.response.send_modal(AddGoalMilestoneModal(goal_id=self.current_goal_id, on_complete_cb=on_task_added))
+
+            subtask_btn.callback = add_task_cb
+            self.add_item(subtask_btn)
+
+            edit_btn = discord.ui.Button(label="Edit Goal", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id=f"perlica:goal:edit:{self.current_goal_id}", row=1)
+
+            async def edit_cb(interaction: discord.Interaction):
+                target_g = await self.db.get_goal_with_milestones(self.current_goal_id)
+
+                async def on_edited(inter: discord.Interaction, updated_goal: Dict[str, Any]):
+                    self.goals = await self.db.get_active_goals_with_milestones()
+                    self._rebuild_items()
+                    embed = format_rich_goal_detail_embed(updated_goal)
+                    await inter.response.edit_message(embed=embed, view=self)
+
+                if target_g:
+                    await interaction.response.send_modal(EditGoalModal(goal=target_g, on_complete_cb=on_edited))
+
+            edit_btn.callback = edit_cb
+            self.add_item(edit_btn)
+
+        # Action Buttons row 2
+        wizard_btn = discord.ui.Button(label="New AI Goal Wizard", style=discord.ButtonStyle.primary, emoji="✨", custom_id="perlica:goal:wizard_start", row=2)
+
+        async def wizard_cb(interaction: discord.Interaction):
+            initial_state = {
+                "user_id": interaction.user.id,
+                "step": 0,
+                "goal_name": "",
+                "goal_category": "Custom",
+                "target_amount": 0.0,
+                "conversation_history": [],
+                "milestones": [],
+                "is_ready_for_review": False,
+            }
+            await self.db.save_wizard_session(interaction.user.id, initial_state)
+            await interaction.response.send_message(
+                "🎯 **Goal Planning Session Started!**\n"
+                "What is your goal? (e.g. *'I want to go to Japan in 2027'*, *'Buy a MacBook Pro'*, *'Build a 6-month emergency fund'*).\n"
+                "Type directly in our chat to begin!",
+                ephemeral=True,
+            )
+
+        wizard_btn.callback = wizard_cb
+        self.add_item(wizard_btn)
+
+        refresh_btn = discord.ui.Button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="perlica:goal:refresh", row=2)
+
+        async def refresh_cb(interaction: discord.Interaction):
+            self.goals = await self.db.get_active_goals_with_milestones()
+            if self.current_goal_id:
+                goal_data = await self.db.get_goal_with_milestones(self.current_goal_id)
+                if goal_data:
+                    self._rebuild_items()
+                    embed = format_rich_goal_detail_embed(goal_data)
+                    await interaction.response.edit_message(embed=embed, view=self)
+                    return
+            self._rebuild_items()
+            embed = format_goals_overview(self.goals)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        refresh_btn.callback = refresh_cb
+        self.add_item(refresh_btn)
+
+
+class GoalDisambiguationView(discord.ui.View):
+    """Interactive 1-tap disambiguation view for multiple matching goals."""
+
+    def __init__(self, matched_goals: List[Dict[str, Any]], deposit_amount: float, db_manager: Any):
+        super().__init__(timeout=180.0)
+        self.matched_goals = matched_goals
+        self.deposit_amount = deposit_amount
+        self.db = db_manager
+
+        for g in matched_goals[:5]:
+            gid = g["id"]
+            btn = discord.ui.Button(
+                label=f"#{gid} {g['name'][:18]}",
+                style=discord.ButtonStyle.primary,
+                emoji="🎯",
+                custom_id=f"perlica:goal:disambig:{gid}",
+            )
+
+            def create_callback(target_gid: int):
+                async def callback(interaction: discord.Interaction):
+                    res = await self.db.deposit_to_goal(target_gid, self.deposit_amount)
+                    if res:
+                        bar = render_progress_bar(res["current_amount"], res["target_amount"])
+                        embed = discord.Embed(
+                            title=f"🎯 Goal Deposit Recorded: {res['name']}",
+                            description=(
+                                f"• **Deposited**: **+RM {self.deposit_amount:.2f}**\n"
+                                f"• **Total Saved**: **RM {res['current_amount']:.2f}** / RM {res['target_amount']:.2f}\n"
+                                f"• **Progress**:\n{bar}\n"
+                                f"• **Remaining**: **RM {res['remaining']:.2f}**"
+                            ),
+                            color=discord.Color.green(),
+                        )
+                        await interaction.response.edit_message(embed=embed, view=None)
+                    else:
+                        await interaction.response.send_message("Goal not found.", ephemeral=True)
+                return callback
+
+            btn.callback = create_callback(gid)
+            self.add_item(btn)
+
+
+GoalsDashboardView = GoalExplorerView
 
 
 class CategoryFilterDropdownView(discord.ui.View):
@@ -2117,12 +2418,92 @@ async def slash_budgets(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view)
 
 
-@bot.tree.command(name="goals", description="View and track your dedicated savings goals with 1-tap deposit")
+@bot.tree.command(name="goals", description="Open the Rich Goals Explorer with visual progress bars and action checklists")
 async def slash_goals(interaction: discord.Interaction):
-    goals = await db.get_active_goals()
-    embed = format_goals_overview(goals)
-    view = GoalsDashboardView(goals)
+    goals = await db.get_active_goals_with_milestones()
+    if goals:
+        embed = format_rich_goal_detail_embed(goals[0])
+        view = GoalExplorerView(goals=goals, current_goal_id=goals[0]["id"], db_manager=db)
+    else:
+        embed = format_goals_overview([])
+        view = GoalExplorerView(goals=[], current_goal_id=None, db_manager=db)
     await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="goal", description="Manage goals: create with dynamic AI wizard, list, view, or deposit")
+@app_commands.describe(
+    action="Action to perform",
+    goal_id="Optional goal ID for view/deposit/delete",
+    amount="Optional deposit amount for action='deposit'",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="✨ Create with AI Wizard", value="create"),
+    app_commands.Choice(name="📂 List / Explore All Goals", value="list"),
+    app_commands.Choice(name="💰 Deposit Savings", value="deposit"),
+    app_commands.Choice(name="🗑️ Delete Goal", value="delete"),
+])
+async def slash_goal(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+    goal_id: Optional[int] = None,
+    amount: Optional[float] = None,
+):
+    if action.value == "create":
+        initial_state = {
+            "user_id": interaction.user.id,
+            "step": 0,
+            "goal_name": "",
+            "goal_category": "Custom",
+            "target_amount": 0.0,
+            "conversation_history": [],
+            "milestones": [],
+            "is_ready_for_review": False,
+        }
+        await db.save_wizard_session(interaction.user.id, initial_state)
+        await interaction.response.send_message(
+            "🎯 **Dynamic AI Goal Planning Session Started!**\n"
+            "What is your new goal? (e.g. *'I want to plan a Japan trip in 2027'*, *'Buy a MacBook Pro'*, *'Build a 6-month emergency fund'*).\n\n"
+            "💬 **Type your reply in this chat to begin!** _(Type `cancel` anytime to abort)_",
+            ephemeral=True,
+        )
+    elif action.value == "list":
+        goals = await db.get_active_goals_with_milestones()
+        if goals:
+            embed = format_rich_goal_detail_embed(goals[0])
+            view = GoalExplorerView(goals=goals, current_goal_id=goals[0]["id"], db_manager=db)
+        else:
+            embed = format_goals_overview([])
+            view = GoalExplorerView(goals=[], current_goal_id=None, db_manager=db)
+        await interaction.response.send_message(embed=embed, view=view)
+    elif action.value == "deposit":
+        if goal_id and amount and amount > 0:
+            res = await db.deposit_to_goal(goal_id, amount)
+            if res:
+                embed = format_rich_goal_detail_embed(res)
+                await interaction.response.send_message(f"💰 Deposited **+RM {amount:.2f}** into Goal #{goal_id}!", embed=embed)
+            else:
+                await interaction.response.send_message(f"Goal #{goal_id} not found.", ephemeral=True)
+        elif goal_id:
+            g = await db.get_goal_by_id(goal_id)
+            if g:
+                await interaction.response.send_modal(GoalDepositModal(goal_id=goal_id, goal_name=g["name"]))
+            else:
+                await interaction.response.send_message(f"Goal #{goal_id} not found.", ephemeral=True)
+        else:
+            goals = await db.get_active_goals_with_milestones()
+            if goals:
+                await interaction.response.send_modal(GoalDepositModal(goal_id=goals[0]["id"], goal_name=goals[0]["name"]))
+            else:
+                await interaction.response.send_message("No active goals found. Use `/goal action:create` to start one!", ephemeral=True)
+    elif action.value == "delete":
+        if not goal_id:
+            await interaction.response.send_message("Please provide `goal_id` to delete.", ephemeral=True)
+            return
+        deleted = await db.delete_goal(goal_id)
+        if deleted:
+            await interaction.response.send_message(f"🗑️ Goal `#{goal_id}` ({deleted['name']}) has been deleted.")
+        else:
+            await interaction.response.send_message(f"Goal `#{goal_id}` not found.", ephemeral=True)
 
 
 @bot.tree.command(name="category", description="Inspect monthly expenses filtered by specific category")
@@ -2440,6 +2821,20 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
     now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
     month_str = now_local.strftime("%Y-%m")
 
+    # Deterministic Goal Disambiguation
+    if payload.goal_deposit_query and not payload.goal_deposit_id and payload.goal_deposit_amount:
+        res_type, matched = await db.resolve_goal_by_name_or_query(payload.goal_deposit_query)
+        if res_type in ("EXACT", "SINGLE"):
+            payload.goal_deposit_id = matched["id"]
+        elif res_type == "AMBIGUOUS":
+            emb = format_goal_disambiguation_embed(matched, payload.goal_deposit_amount)
+            view = GoalDisambiguationView(matched, payload.goal_deposit_amount, db_manager=db)
+            if from_interaction:
+                await target.response.send_message(embed=emb, view=view)
+            else:
+                await target.reply(embed=emb, view=view)
+            return
+
     target_goal_name = None
     if payload.goal_deposit_id:
         target_goal = await db.get_goal_by_id(payload.goal_deposit_id)
@@ -2563,6 +2958,26 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
                 target_date=payload.goal_create_date,
                 created_at=now_str,
             )
+
+        # Handle Goal Milestone Subtask Completion & Foreign Key Linking
+        if payload.goal_milestone_completed_title:
+            target_gid = payload.goal_milestone_goal_id or (goal_update_info["id"] if goal_update_info else None)
+            if not target_gid:
+                active_gs = await db.get_active_goals_with_milestones()
+                if active_gs:
+                    target_gid = active_gs[0]["id"]
+            if target_gid:
+                g_with_m = await db.get_goal_with_milestones(target_gid)
+                if g_with_m and g_with_m.get("milestones"):
+                    m_title_q = payload.goal_milestone_completed_title.lower()
+                    for m in g_with_m["milestones"]:
+                        if m_title_q in m["title"].lower() or m["title"].lower() in m_title_q:
+                            linked_eid = created_expense_ids[0] if created_expense_ids else None
+                            if linked_eid:
+                                await db.complete_milestone_with_expense(m["id"], linked_eid, completed_at=now_str)
+                            else:
+                                await db.toggle_goal_milestone(m["id"], is_completed=1)
+                            break
 
         if payload.add_bill_name and payload.add_bill_amount is not None:
             b_cat = payload.add_bill_category.value if payload.add_bill_category else "Investments & Savings"
@@ -2744,6 +3159,30 @@ async def on_message(message: discord.Message):
     if not content and not image_attachment:
         return
 
+    # Check for active Goal Creation Wizard session (SQLite-persisted state)
+    wizard_session = await db.get_wizard_session(message.author.id, max_age_seconds=900)
+    if wizard_session:
+        if content.lower() in ("cancel", "exit", "stop", "abort"):
+            await db.delete_wizard_session(message.author.id)
+            await message.reply("❌ **Goal planning session cancelled.**")
+            return
+
+        async with message.channel.typing():
+            from src.goal_wizard import process_wizard_turn
+            state, reply_text = await process_wizard_turn(
+                user_id=message.author.id,
+                user_message=content,
+                db_manager=db,
+                groq_api_key=settings.GROQ_API_KEY,
+            )
+            if state.is_ready_for_review:
+                embed = format_goal_wizard_preview_embed(state.to_dict())
+                view = GoalWizardReviewView(user_id=message.author.id, state_dict=state.to_dict(), db_manager=db)
+                await message.reply(embed=embed, view=view)
+            else:
+                await message.reply(reply_text)
+        return
+
     # Direct Ingest Hub Command Check
     if content.lower().strip() in ("ingest", "!ingest", "knowledge", "kb"):
         if not is_user_authorized_for_copilot(message.author.id):
@@ -2755,7 +3194,7 @@ async def on_message(message: discord.Message):
         return
 
     # Direct Help Command Check
-    if content.lower() in ("!help", "help", "guide", "how to use", "/help", "commands"):
+    if content.lower() in ("!help", "help", "guide", "how to use", "/help", "commands", "perlica"):
         await message.reply(embed=format_help_guide(), view=QuickActionView())
         return
 
@@ -2793,9 +3232,15 @@ async def on_message(message: discord.Message):
         return
 
     # Direct Goals Command Check
-    if content.lower() in ("goals", "!goals", "/goals", "goal"):
-        goals = await db.get_active_goals()
-        await message.reply(embed=format_goals_overview(goals), view=QuickActionView())
+    if content.lower() in ("goals", "!goals", "/goals", "goal", "!goal", "my goals"):
+        goals = await db.get_active_goals_with_milestones()
+        if goals:
+            embed = format_rich_goal_detail_embed(goals[0])
+            view = GoalExplorerView(goals=goals, current_goal_id=goals[0]["id"], db_manager=db)
+        else:
+            embed = format_goals_overview([])
+            view = GoalExplorerView(goals=[], current_goal_id=None, db_manager=db)
+        await message.reply(embed=embed, view=view)
         return
 
     # Direct Investments & DCA Command Check
