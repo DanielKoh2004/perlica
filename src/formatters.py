@@ -1717,9 +1717,9 @@ def format_sources_dashboard_embed(sources_summary: List[Dict[str, Any]]) -> dis
             else "🔴 Failed"))
         )
         
-        eligible = s.get("eligible_count", 0)
-        indexed = s.get("indexed_count", 0)
         actual_files = s.get("actual_files_count", 0)
+        eligible = s.get("eligible_count") or actual_files
+        indexed = s.get("indexed_count") if (s.get("indexed_count", 0) > 0 or status == "COMPLETE") else actual_files
         chunks = s.get("total_chunks_count", 0)
         last_sync = s.get("last_sync_at") or s.get("created_at") or "Never"
 

@@ -2451,7 +2451,7 @@ class DatabaseManager:
                 """
                 SELECT 
                     s.*,
-                    COUNT(DISTINCT sf.id) as actual_files_count,
+                    COUNT(DISTINCT CASE WHEN sf.status = 'INDEXED' THEN sf.id END) as actual_files_count,
                     COUNT(DISTINCT kc.id) as total_chunks_count
                 FROM sources s
                 LEFT JOIN source_files sf ON s.id = sf.source_id
