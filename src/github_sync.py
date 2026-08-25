@@ -109,7 +109,7 @@ def chunk_python_code(
             start_l = node.lineno
             end_l = getattr(node, "end_lineno", start_l + 10)
             docstring = ast.get_docstring(node) or ""
-            fn_code = get_source_segment(start_l, end_l)
+            fn_code = get_source_segment(start_l, min(end_l, start_l + 80))
             chunks.append({
                 "section_title": f"{file_path} > def {node.name}()",
                 "permalink_url": f"{base_url}#L{start_l}-L{end_l}",
@@ -154,7 +154,7 @@ def chunk_python_code(
                     m_start = item.lineno
                     m_end = getattr(item, "end_lineno", m_start + 10)
                     m_doc = ast.get_docstring(item) or ""
-                    m_code = get_source_segment(m_start, m_end)
+                    m_code = get_source_segment(m_start, min(m_end, m_start + 80))
                     chunks.append({
                         "section_title": f"{file_path} > {node.name}.{item.name}()",
                         "permalink_url": f"{base_url}#L{m_start}-L{m_end}",

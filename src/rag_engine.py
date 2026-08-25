@@ -88,34 +88,44 @@ class CopilotAnswer:
     def __contains__(self, item):
         return hasattr(self, item) or item == "response"
 
+import gc
+
 # Singleton embedder instance for FastEmbed ONNX runtime
 _EMBEDDER_INSTANCE: Optional[TextEmbedding] = None
 MODEL_ID = "bge-small-en-v1.5"
 
 
 def get_embedder() -> TextEmbedding:
-    """Lazy load local FastEmbed ONNX runtime (~45MB RAM)."""
+    """Lazy load local FastEmbed ONNX runtime with constrained single-thread memory usage (~40MB RAM)."""
     global _EMBEDDER_INSTANCE
     if _EMBEDDER_INSTANCE is None:
-        _EMBEDDER_INSTANCE = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        _EMBEDDER_INSTANCE = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", threads=1)
     return _EMBEDDER_INSTANCE
 
 
 def compute_embedding(text: str) -> bytes:
     """Compute 384-d dense vector for a single string, returning bytes."""
     embedder = get_embedder()
-    generator = embedder.embed([text])
+    generator = embedder.embed([text[:2000]], batch_size=1)
     vec = next(generator).astype(np.float32)
     return vec.tobytes()
 
 
-def compute_embeddings_batch(texts: List[str]) -> List[bytes]:
-    """Compute dense vectors for a batch of strings."""
+def compute_embeddings_batch(texts: List[str], batch_size: int = 8) -> List[bytes]:
+    """Compute dense vectors for a batch of strings in memory-bounded micro-batches."""
     if not texts:
         return []
     embedder = get_embedder()
-    generator = embedder.embed(texts)
-    return [vec.astype(np.float32).tobytes() for vec in generator]
+    clamped_texts = [t[:2000] for t in texts]
+
+    results: List[bytes] = []
+    # Process in micro-batches of 16 to avoid large intermediate tensor allocations in ONNX runtime
+    for i in range(0, len(clamped_texts), 16):
+        batch = clamped_texts[i : i + 16]
+        gen = embedder.embed(batch, batch_size=batch_size)
+        for vec in gen:
+            results.append(vec.astype(np.float32).tobytes())
+    return results
 
 
 def chunk_markdown_text(

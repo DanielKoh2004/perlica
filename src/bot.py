@@ -1493,6 +1493,11 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
                 logger.warning(f"Failed to embed/commit file '{path}': {file_err}")
                 await db.mark_source_file_failed(source_id, path, blob_sha, sync_id=job_id, status="FAILED_EMBED")
                 continue
+            finally:
+                # Keep memory strictly bounded on Railway free/hobby containers (512MB RAM ceiling)
+                import gc
+                gc.collect()
+                await asyncio.sleep(0.02)
 
         # Track eligible files beyond 250 cap so they are not mistakenly purged as deleted
         if capped_files:
