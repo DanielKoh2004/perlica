@@ -2038,42 +2038,53 @@ class RawEvidenceModal(discord.ui.Modal, title="📄 Verbatim Evidence Excerpt")
 
 
 class CopilotAnswerView(discord.ui.View):
-    """Interactive view for Copilot answer allowing 1-tap raw excerpt inspection."""
+    """Stateless persistent view for Copilot answers that survives bot restarts."""
 
-    def __init__(self, answer_id: Optional[int], db_manager: Any):
-        super().__init__(timeout=300)
+    def __init__(self, answer_id: Optional[int] = None, db_manager: Any = None):
+        super().__init__(timeout=None)
         self.answer_id = answer_id
         self.db = db_manager
 
-    @discord.ui.button(label="📄 View Raw Source", style=discord.ButtonStyle.secondary, emoji="🔍")
-    async def view_raw_source_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.clear_items()
+        btn_cid = f"perlica:copilot:raw:{answer_id}" if answer_id else "perlica:copilot:raw:none"
+        btn = discord.ui.Button(
+            label="📄 View Raw Source",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔍",
+            custom_id=btn_cid,
+        )
+        btn.callback = self.view_raw_source_button
+        self.add_item(btn)
+
+    async def view_raw_source_button(self, interaction: discord.Interaction):
         if not self.answer_id:
             await interaction.response.send_message("No evidence snapshots recorded for this answer.", ephemeral=True)
             return
 
-        snapshots = await self.db.get_answer_evidence_snapshots(self.answer_id)
-        if not snapshots:
-            await interaction.response.send_message("Evidence snapshots could not be found.", ephemeral=True)
-            return
-
-        first_snap = snapshots[0]
-        modal = RawEvidenceModal(
-            raw_content=first_snap.get("raw_text", "No raw content found."),
-            citation_label=first_snap.get("citation", "Evidence Source"),
-        )
-        await interaction.response.send_modal(modal)
+        if self.db:
+            snapshots = await self.db.get_answer_evidence_snapshots(self.answer_id)
+            if snapshots:
+                first_snap = snapshots[0]
+                modal = RawEvidenceModal(
+                    raw_content=first_snap.get("raw_text", "No raw content found."),
+                    citation_label=first_snap.get("citation", "Evidence Source"),
+                )
+                await interaction.response.send_modal(modal)
+                return
+        await interaction.response.send_message("Evidence snapshots could not be found.", ephemeral=True)
 
 
 class SourcesDashboardView(discord.ui.View):
-    """Interactive view for the Knowledge Base /sources dashboard with 1-tap live refresh."""
+    """Stateless persistent view for the Knowledge Base /sources dashboard with 1-tap live refresh."""
 
-    def __init__(self, db_manager: Any):
-        super().__init__(timeout=300)
+    def __init__(self, db_manager: Any = None):
+        super().__init__(timeout=None)
         self.db = db_manager
 
-    @discord.ui.button(label="🔄 Refresh Dashboard", style=discord.ButtonStyle.secondary, custom_id="sources:refresh")
+    @discord.ui.button(label="🔄 Refresh Dashboard", style=discord.ButtonStyle.secondary, custom_id="perlica:sources:refresh")
     async def on_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        sources_summary = await self.db.get_knowledge_sources_summary()
-        embed = format_sources_dashboard_embed(sources_summary)
-        await interaction.response.edit_message(embed=embed, view=self)
+        if self.db:
+            sources_summary = await self.db.get_knowledge_sources_summary()
+            embed = format_sources_dashboard_embed(sources_summary)
+            await interaction.response.edit_message(embed=embed, view=self)
 

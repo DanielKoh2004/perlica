@@ -1334,6 +1334,31 @@ async def on_interaction(interaction: discord.Interaction):
                 await interaction.response.edit_message(embed=embed, view=view)
             return
 
+        # 1-Tap Knowledge Sources Live Refresh: perlica:sources:refresh
+        elif cid == "perlica:sources:refresh":
+            sources_summary = await db.get_knowledge_sources_summary()
+            embed = format_sources_dashboard_embed(sources_summary)
+            view = SourcesDashboardView(db_manager=db)
+            await interaction.response.edit_message(embed=embed, view=view)
+            return
+
+        # 1-Tap Copilot Raw Excerpt Inspection: perlica:copilot:raw:<answer_id>
+        elif cid.startswith("perlica:copilot:raw:"):
+            raw_ans_id = cid.split(":")[-1]
+            if raw_ans_id.isdigit():
+                answer_id = int(raw_ans_id)
+                snapshots = await db.get_answer_evidence_snapshots(answer_id)
+                if snapshots:
+                    first_snap = snapshots[0]
+                    modal = RawEvidenceModal(
+                        raw_content=first_snap.get("raw_text", "No raw content found."),
+                        citation_label=first_snap.get("citation", "Evidence Source"),
+                    )
+                    await interaction.response.send_modal(modal)
+                    return
+            await interaction.response.send_message("Evidence snapshots could not be found for this answer.", ephemeral=True)
+            return
+
 
 # --- SLASH COMMAND AUTOCOMPLETES (STRICT 25 CAP) ---
 
@@ -2033,6 +2058,7 @@ async def on_ready():
 
     bot.add_view(QuickActionView())
     bot.add_view(LiveDashboardView())
+    bot.add_view(SourcesDashboardView(db_manager=db))
 
     if not daily_summary_loop.is_running():
         daily_summary_loop.start()

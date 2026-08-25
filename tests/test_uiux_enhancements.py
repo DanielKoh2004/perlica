@@ -130,3 +130,23 @@ def test_milestone_celebration_embed():
     embed = format_milestone_celebration(milestone)
     assert "🎖️ 7-Day Discipline Master" in embed.title
     assert "🔥 7-Day Streak" in embed.description
+
+
+def test_stateless_copilot_and_sources_views_survive_restarts():
+    """
+    CRITICAL INVARIANT: Verify CopilotAnswerView and SourcesDashboardView
+    have timeout=None and explicit custom_ids so buttons survive infinite bot restarts.
+    """
+    from src.formatters import CopilotAnswerView, SourcesDashboardView
+
+    # Copilot Answer View
+    ans_view = CopilotAnswerView(answer_id=99)
+    assert ans_view.timeout is None
+    btn = ans_view.children[0]
+    assert btn.custom_id == "perlica:copilot:raw:99"
+
+    # Sources Dashboard View
+    src_view = SourcesDashboardView()
+    assert src_view.timeout is None
+    btn_src = src_view.children[0]
+    assert btn_src.custom_id == "perlica:sources:refresh"
