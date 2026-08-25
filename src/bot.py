@@ -1659,8 +1659,18 @@ async def slash_ask(
                 await interaction.followup.send(embed=emb)
 
 
+active_sync_targets: set = set()
+
+
 async def execute_ingestion_job(job_id: int, source_type: str, target_ref: str):
-    """Execute a single ingestion job durably based on its source type."""
+    """Execute a single ingestion job durably with per-target concurrency serialization."""
+    lock_key = f"{source_type}:{target_ref}"
+    if lock_key in active_sync_targets:
+        logger.info(f"Target '{lock_key}' is already actively syncing. Marking duplicate job #{job_id} as CANCELLED.")
+        await db.update_ingestion_job(job_id, "CANCELLED", progress_text="Superseded by concurrent active sync.")
+        return
+
+    active_sync_targets.add(lock_key)
     try:
         if source_type == "GITHUB":
             clean_ref = target_ref.replace("github:", "")
@@ -1677,15 +1687,33 @@ async def execute_ingestion_job(job_id: int, source_type: str, target_ref: str):
     except Exception as e:
         logger.error(f"Error executing ingestion job #{job_id}: {e}", exc_info=True)
         await db.update_ingestion_job(job_id, "FAILED", error_message=str(e)[:300])
+    finally:
+        active_sync_targets.discard(lock_key)
 
 
 async def recover_and_resume_ingestion_jobs():
-    """Startup recovery: resets interrupted RUNNING jobs and resumes all PENDING jobs."""
+    """Startup recovery: resets interrupted RUNNING jobs and resumes unique PENDING jobs."""
     try:
         pending_jobs = await db.recover_interrupted_ingestion_jobs()
         if pending_jobs:
-            logger.info(f"Recovered {len(pending_jobs)} interrupted/pending ingestion jobs on startup.")
+            # Deduplicate: if multiple jobs exist for the same target, keep only the latest
+            latest_jobs_by_target: Dict[Tuple[str, str], Dict[str, Any]] = {}
             for job in pending_jobs:
+                key = (job["source_type"], job["target_ref"])
+                if key in latest_jobs_by_target:
+                    old_job = latest_jobs_by_target[key]
+                    await db.update_ingestion_job(
+                        old_job["id"],
+                        "CANCELLED",
+                        progress_text="Superseded by newer job on startup.",
+                    )
+                latest_jobs_by_target[key] = job
+
+            logger.info(
+                f"Recovered {len(latest_jobs_by_target)} unique ingestion jobs on startup "
+                f"(superseded {len(pending_jobs) - len(latest_jobs_by_target)} duplicate jobs)."
+            )
+            for job in latest_jobs_by_target.values():
                 asyncio.create_task(execute_ingestion_job(job["id"], job["source_type"], job["target_ref"]))
     except Exception as e:
         logger.warning(f"Failed to recover ingestion jobs on startup: {e}")
