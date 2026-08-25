@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     KNOWLEDGE_DIR: str = Field(default="knowledge", description="Directory for local markdown/PDF archives")
     COPILOT_CONTEXT_BUDGET_TOKENS: int = Field(default=2500, description="Max token budget for retrieved evidence in LLM prompt")
 
+    # Knowledge Base Scheduled Auto-Sync Settings
+    REPO_AUTO_SYNC_ENABLED: bool = True
+    REPO_AUTO_SYNC_TIME: str = "04:00"  # Daily at 04:00 AM local time
+
     @field_validator("ALLOWED_USER_ID", "DISCORD_CHANNEL_ID", mode="before")
     @classmethod
     def parse_optional_int(cls, value: Any) -> Optional[int]:
@@ -90,6 +94,13 @@ class Settings(BaseSettings):
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             return int(parts[0]), int(parts[1])
         return 20, 0
+
+    @property
+    def repo_auto_sync_hour_minute(self) -> tuple[int, int]:
+        parts = self.REPO_AUTO_SYNC_TIME.split(":")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            return int(parts[0]), int(parts[1])
+        return 4, 0
 
 
 settings = Settings()

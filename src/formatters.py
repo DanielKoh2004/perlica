@@ -1777,25 +1777,72 @@ def sanitize_discord_response_markdown(text: str) -> str:
 
 
 def format_citations_field(citations: Any) -> Optional[Dict[str, str]]:
-    """Format deterministic source citations into a clean Discord embed field."""
+    """Format deterministic source citations into a clean grouped Discord embed field."""
     if not citations:
         return None
 
-    lines = []
-    for cit in citations[:6]:
-        label = cit.get("label") if isinstance(cit, dict) else getattr(cit, "label", getattr(cit, "citation", "Source"))
-        permalink = cit.get("permalink") if isinstance(cit, dict) else getattr(cit, "permalink", None)
-        if permalink:
-            lines.append(f"• [{label}]({permalink})")
-        else:
-            lines.append(f"• **{label}**")
+    grouped: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+    total_citations = len(citations)
 
-    if not lines:
+    for cit in citations[:6]:
+        label = (
+            (cit.get("label") or cit.get("citation"))
+            if isinstance(cit, dict)
+            else (getattr(cit, "label", None) or getattr(cit, "citation", None))
+        ) or "Source"
+        permalink = cit.get("permalink") if isinstance(cit, dict) else getattr(cit, "permalink", None)
+        file_path = cit.get("file_path") if isinstance(cit, dict) else getattr(cit, "file_path", "")
+        loc = cit.get("location") if isinstance(cit, dict) else getattr(cit, "location", "")
+
+        # Fallback to parse file and location from label if file_path is empty
+        if not file_path:
+            if "#" in label:
+                parts = label.split("#", 1)
+                file_path = parts[0].strip()
+                if not loc:
+                    loc = f"L{parts[1].strip()}" if not parts[1].strip().startswith("L") else parts[1].strip()
+            elif ":" in label and not label.startswith("http"):
+                parts = label.rsplit(":", 1)
+                file_path = parts[0].strip()
+                if not loc:
+                    loc = parts[1].strip()
+            elif " > " in label:
+                parts = label.split(" > ", 1)
+                file_path = parts[0].strip()
+                if not loc:
+                    loc = parts[1].strip()
+            else:
+                file_path = label
+                if not loc:
+                    loc = "ref"
+
+        if not loc:
+            loc = "ref"
+
+        if loc.startswith("LL"):
+            loc = loc[1:]
+
+        if file_path not in grouped:
+            grouped[file_path] = []
+        grouped[file_path].append((loc, permalink))
+
+    if not grouped:
         return None
 
+    lines = []
+    for f_path, locs in grouped.items():
+        loc_badges = []
+        for loc, plink in locs:
+            if plink:
+                loc_badges.append(f"[{loc}]({plink})")
+            else:
+                loc_badges.append(f"`{loc}`")
+        badge_str = " · ".join(loc_badges)
+        lines.append(f"• **`{f_path}`**\n  ↳ {badge_str}")
+
     title = "📚 Top Grounded Source Citations"
-    if len(citations) > 6:
-        title = f"📚 Top Grounded Source Citations (showing top 6 of {len(citations)})"
+    if total_citations > 6:
+        title = f"📚 Top Grounded Source Citations (showing top 6 of {total_citations})"
 
     return {
         "name": title[:256],

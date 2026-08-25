@@ -165,7 +165,8 @@ def test_copilot_answer_dataclasses_and_coverage_rendering():
     # Verify field formatting
     assert len(emb.fields) == 1
     assert "Grounded Source Citations" in emb.fields[0].name
-    assert "[src/github_sync.py:L35-L57](https://github.com/DanielKoh2004/perlica/blob/abc/src/github_sync.py#L35-L57)" in emb.fields[0].value
+    assert "• **`src/github_sync.py`**" in emb.fields[0].value
+    assert "[L35-L57](https://github.com/DanielKoh2004/perlica/blob/abc/src/github_sync.py#L35-L57)" in emb.fields[0].value
 
 
 def test_long_answer_section_splitting_and_1024_char_limit():
@@ -385,3 +386,43 @@ def test_code_block_safe_section_chunking_preserves_syntax_fences():
     # Invariant: All chunks must be <= 1024 chars
     for c in chunks:
         assert len(c) <= 1024
+
+
+def test_grouped_citations_field_by_source_file():
+    """Verify format_citations_field groups multiple chunks from the same file into unified headers."""
+    from src.rag_engine import CopilotCitation
+    from src.formatters import format_citations_field
+
+    citations = [
+        CopilotCitation(
+            label="src/database.py#1021-1061",
+            permalink="https://github.com/DanielKoh2004/perlica/blob/main/src/database.py#L1021-L1061",
+            file_path="src/database.py",
+            location="L1021-1061",
+            chunk_id=1,
+        ),
+        CopilotCitation(
+            label="src/database.py#971-1019",
+            permalink="https://github.com/DanielKoh2004/perlica/blob/main/src/database.py#L971-L1019",
+            file_path="src/database.py",
+            location="L971-1019",
+            chunk_id=2,
+        ),
+        CopilotCitation(
+            label="src/formatters.py#515-598",
+            permalink="https://github.com/DanielKoh2004/perlica/blob/main/src/formatters.py#L515-L598",
+            file_path="src/formatters.py",
+            location="L515-598",
+            chunk_id=3,
+        ),
+    ]
+
+    field = format_citations_field(citations)
+    assert field is not None
+    assert "Top Grounded Source Citations" in field["name"]
+    # Verify file grouping: src/database.py appears once as bold header
+    val = field["value"]
+    assert "• **`src/database.py`**" in val
+    assert "[L1021-1061](https://github.com/DanielKoh2004/perlica/blob/main/src/database.py#L1021-L1061)" in val
+    assert "[L971-1019](https://github.com/DanielKoh2004/perlica/blob/main/src/database.py#L971-L1019)" in val
+    assert "• **`src/formatters.py`**" in val

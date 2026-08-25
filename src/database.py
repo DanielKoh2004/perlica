@@ -2463,6 +2463,15 @@ class DatabaseManager:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
 
+    async def get_github_sources(self) -> List[Dict[str, Any]]:
+        """Fetch all indexed GitHub repositories eligible for automated background sync."""
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                "SELECT * FROM sources WHERE source_type = 'GITHUB' ORDER BY id ASC"
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
     async def delete_knowledge_source(self, source_ref: str) -> bool:
         """
         Delete a knowledge source by reference. Cascades to source_files, knowledge_chunks,

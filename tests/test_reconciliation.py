@@ -575,3 +575,26 @@ async def test_embedding_failure_does_not_purge_or_retrieve_file(temp_db):
     )
     res_restored = await temp_db.fts_search_knowledge("compute_euclidean_distance", source_id=source_id)
     assert len(res_restored) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_github_sources_and_auto_sync_configuration(temp_db):
+    """Verify get_github_sources only retrieves GITHUB sources and config settings are valid."""
+    from src.config import settings
+
+    # Add 2 GITHUB sources, 1 WEB source, 1 NOTE source
+    await temp_db.get_or_create_source("Perlica Core", "GITHUB", "github:DanielKoh2004/perlica")
+    await temp_db.get_or_create_source("Frontend Repo", "GITHUB", "github:DanielKoh2004/perlica-web")
+    await temp_db.get_or_create_source("Docs Site", "WEB", "https://docs.perlica.dev")
+    await temp_db.get_or_create_source("Quick Notes", "NOTES", "local:notes")
+
+    gh_sources = await temp_db.get_github_sources()
+    assert len(gh_sources) == 2
+    assert all(s["source_type"] == "GITHUB" for s in gh_sources)
+    refs = [s["source_ref"] for s in gh_sources]
+    assert "github:DanielKoh2004/perlica" in refs
+    assert "github:DanielKoh2004/perlica-web" in refs
+
+    # Verify auto-sync configuration properties
+    assert settings.REPO_AUTO_SYNC_ENABLED is True
+    assert settings.repo_auto_sync_hour_minute == (4, 0)

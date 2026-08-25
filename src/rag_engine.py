@@ -18,6 +18,7 @@ class CopilotCitation:
     source_type: str = ""
     location: str = ""
     chunk_id: Optional[int] = None
+    file_path: str = ""
 
     def __getitem__(self, item):
         return getattr(self, item)
@@ -423,6 +424,7 @@ async def synthesize_copilot_answer(
             source_type=s_type,
             location=loc,
             chunk_id=c_id,
+            file_path=f_path,
         )
         citations_list.append(cit)
         db_evidence_snapshots.append({

@@ -2072,6 +2072,10 @@ async def on_ready():
         weekly_review_loop.start()
         logger.info(f"Weekly executive review loop scheduled on Sundays at {settings.WEEKLY_REVIEW_TIME} ({settings.TIMEZONE}).")
 
+    if settings.REPO_AUTO_SYNC_ENABLED and not repo_auto_sync_loop.is_running():
+        repo_auto_sync_loop.start()
+        logger.info(f"Daily repo auto-sync loop scheduled at {settings.REPO_AUTO_SYNC_TIME} ({settings.TIMEZONE}).")
+
 
 summary_h, summary_m = settings.summary_hour_minute
 summary_time = datetime.time(hour=summary_h, minute=summary_m, tzinfo=settings.tz)
@@ -2081,6 +2085,9 @@ morning_time = datetime.time(hour=morning_h, minute=morning_m, tzinfo=settings.t
 
 weekly_h, weekly_m = settings.weekly_review_hour_minute
 weekly_time = datetime.time(hour=weekly_h, minute=weekly_m, tzinfo=settings.tz)
+
+repo_sync_h, repo_sync_m = settings.repo_auto_sync_hour_minute
+repo_sync_time = datetime.time(hour=repo_sync_h, minute=repo_sync_m, tzinfo=settings.tz)
 
 
 @tasks.loop(time=morning_time)
@@ -2197,6 +2204,34 @@ async def weekly_review_loop():
         logger.info(f"Dispatched Sunday Weekly Review DM for {start_of_week} to {end_of_week}.")
     except Exception as e:
         logger.error(f"Failed to send weekly review DM: {e}")
+
+
+@tasks.loop(time=repo_sync_time)
+async def repo_auto_sync_loop():
+    """Daily background scheduled job reconciling all indexed GitHub repositories at 04:00 AM."""
+    if not settings.REPO_AUTO_SYNC_ENABLED:
+        return
+
+    logger.info("Starting automated daily GitHub repository re-sync...")
+    try:
+        github_sources = await db.get_github_sources()
+        if not github_sources:
+            logger.info("No GitHub sources registered for auto-sync.")
+            return
+
+        for source in github_sources:
+            source_ref = source.get("source_ref", "")
+            repo_name = source_ref.replace("github:", "").strip()
+            if not repo_name:
+                continue
+
+            logger.info(f"Auto-syncing repository '{repo_name}'...")
+            job_id = await db.create_ingestion_job(source_type="GITHUB", target_ref=source_ref)
+            await run_repo_sync_job(job_id, repo_name, branch="main")
+            logger.info(f"Auto-sync completed for repository '{repo_name}' (Job #{job_id}).")
+
+    except Exception as e:
+        logger.error(f"Error during automated daily repo sync: {e}", exc_info=True)
 
 
 # --- ACTION INGESTION HANDLER HELPER ---
