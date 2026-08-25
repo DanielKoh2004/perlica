@@ -7,9 +7,11 @@ from typing import Optional, List, Dict, Any, Tuple
 import httpx
 from src.config import settings
 
+from groq import AsyncGroq
+from src.extractor import GROQ_MODEL_CANDIDATES
+
 logger = logging.getLogger(__name__)
 
-GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_WIZARD_TIMEOUT_SECONDS = 900  # 15 minutes
 
 
@@ -23,7 +25,7 @@ class GoalWizardState:
     current_amount: float = 0.0
     target_date: Optional[str] = None
     target_date_human: str = ""
-    notes: str = ""
+    notes: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     milestones: List[Dict[str, Any]] = field(default_factory=list)
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
@@ -43,24 +45,25 @@ class GoalWizardState:
             current_amount=float(data.get("current_amount", 0.0) or 0.0),
             target_date=data.get("target_date"),
             target_date_human=data.get("target_date_human", ""),
-            notes=data.get("notes", ""),
-            metadata=data.get("metadata") or {},
-            milestones=data.get("milestones") or [],
-            conversation_history=data.get("conversation_history") or [],
+            notes=data.get("notes"),
+            metadata=data.get("metadata", {}),
+            milestones=data.get("milestones", []),
+            conversation_history=data.get("conversation_history", []),
             is_ready_for_review=bool(data.get("is_ready_for_review", False)),
         )
 
 
 def normalize_iso_date(raw_date_str: Optional[str], fallback_human: str = "") -> Tuple[Optional[str], str]:
     """
-    Deterministically validate and convert date string to strict ISO-8601 YYYY-MM-DD.
-    Returns (iso_date_or_none, human_readable_display).
+    Deterministically normalizes natural language date strings to strict ISO-8601 YYYY-MM-DD.
+    Returns (iso_str, human_display_str).
     """
-    if not raw_date_str or not raw_date_str.strip():
+    if not raw_date_str:
         return None, fallback_human
 
     clean = raw_date_str.strip()
-    # Direct YYYY-MM-DD match
+
+    # Exact YYYY-MM-DD match
     if re.match(r"^\d{4}-\d{2}-\d{2}$", clean):
         try:
             datetime.strptime(clean, "%Y-%m-%d")
@@ -68,52 +71,47 @@ def normalize_iso_date(raw_date_str: Optional[str], fallback_human: str = "") ->
         except ValueError:
             pass
 
-    # YYYY-MM match -> last day of month
-    m_month = re.match(r"^(\d{4})-(\d{2})$", clean)
-    if m_month:
-        year, month = int(m_month.group(1)), int(m_month.group(2))
-        if 1 <= month <= 12:
-            import calendar
-            last_day = calendar.monthrange(year, month)[1]
-            iso_res = f"{year:04d}-{month:02d}-{last_day:02d}"
-            return iso_res, fallback_human or f"{calendar.month_name[month]} {year}"
+    # YYYY-MM (e.g. 2027-01 -> 2027-01-31)
+    if re.match(r"^\d{4}-\d{2}$", clean):
+        try:
+            dt = datetime.strptime(f"{clean}-01", "%Y-%m-%d")
+            # compute month end
+            if dt.month == 12:
+                next_month = dt.replace(year=dt.year + 1, month=1, day=1)
+            else:
+                next_month = dt.replace(month=dt.month + 1, day=1)
+            month_end = next_month - date.resolution
+            return month_end.strftime("%Y-%m-%d"), fallback_human or clean
+        except Exception:
+            pass
 
     return None, fallback_human or clean
 
 
 async def call_groq_llm(messages: List[Dict[str, str]], groq_api_key: str) -> str:
-    """Invoke Groq API with robust fallback models."""
-    candidate_models = [
-        settings.GROQ_MODEL,
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-    ]
-    headers = {
-        "Authorization": f"Bearer {groq_api_key}",
-        "Content-Type": "application/json",
-    }
+    """Invoke Groq API with robust shared model candidates and backoff."""
+    client = AsyncGroq(api_key=groq_api_key)
+    candidate_models = [settings.GROQ_MODEL] if settings.GROQ_MODEL else []
+    for m in GROQ_MODEL_CANDIDATES:
+        if m and m not in candidate_models:
+            candidate_models.append(m)
 
     last_err = None
     for model in candidate_models:
-        if not model:
-            continue
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                res = await client.post(GROQ_BASE_URL, headers=headers, json=payload)
-                if res.status_code == 200:
-                    data = res.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    last_err = f"Status {res.status_code}: {res.text}"
+            res = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            content = res.choices[0].message.content
+            if content:
+                return content
         except Exception as e:
             last_err = str(e)
             logger.warning(f"Groq goal wizard model '{model}' failed: {e}")
+            continue
 
     raise RuntimeError(f"All Groq model attempts failed for Goal Wizard: {last_err}")
 
