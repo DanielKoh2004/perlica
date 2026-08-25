@@ -8,7 +8,7 @@ from src.config import settings
 from src.security import is_secret_path, scan_content_for_secrets
 from src.database import DatabaseManager
 
-MAX_FILE_SIZE_BYTES = 100 * 1024  # 100 KB limit
+MAX_FILE_SIZE_BYTES = 500 * 1024  # 500 KB limit
 MAX_REPO_FILES = 250               # 250 files cap
 
 BINARY_EXTENSIONS = {
