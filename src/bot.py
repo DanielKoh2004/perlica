@@ -55,6 +55,7 @@ from src.formatters import (
     generate_html_report,
     render_progress_bar,
     format_copilot_answer_embed,
+    format_copilot_answer_embeds,
     format_sources_dashboard_embed,
     CopilotAnswerView,
 )
@@ -1611,9 +1612,18 @@ async def slash_ask(
         user_id=str(interaction.user.id),
     )
 
-    embed = format_copilot_answer_embed(answer_data)
-    view = CopilotAnswerView(answer_id=answer_data.get("answer_id"), db_manager=db)
-    await interaction.followup.send(embed=embed, view=view)
+    embeds = format_copilot_answer_embeds(answer_data)
+    ans_id = answer_data.answer_id if hasattr(answer_data, "answer_id") else answer_data.get("answer_id")
+    view = CopilotAnswerView(answer_id=ans_id, db_manager=db)
+
+    if len(embeds) == 1:
+        await interaction.followup.send(embed=embeds[0], view=view)
+    else:
+        for idx, emb in enumerate(embeds):
+            if idx == len(embeds) - 1:
+                await interaction.followup.send(embed=emb, view=view)
+            else:
+                await interaction.followup.send(embed=emb)
 
 
 @bot.tree.command(name="repo", description="Manage GitHub repository indexing and reconciliation")
@@ -2580,9 +2590,17 @@ async def on_message(message: discord.Message):
         query_text = ask_match.group(1).strip()
         async with message.channel.typing():
             answer_data = await synthesize_copilot_answer(db=db, query=query_text, user_id=str(message.author.id))
-            embed = format_copilot_answer_embed(answer_data)
-            view = CopilotAnswerView(answer_id=answer_data.get("answer_id"), db_manager=db)
-            await message.reply(embed=embed, view=view)
+            embeds = format_copilot_answer_embeds(answer_data)
+            ans_id = answer_data.answer_id if hasattr(answer_data, "answer_id") else answer_data.get("answer_id")
+            view = CopilotAnswerView(answer_id=ans_id, db_manager=db)
+            if len(embeds) == 1:
+                await message.reply(embed=embeds[0], view=view)
+            else:
+                for idx, emb in enumerate(embeds):
+                    if idx == len(embeds) - 1:
+                        await message.reply(embed=emb, view=view)
+                    else:
+                        await message.reply(embed=emb)
         return
 
     # Direct Sources Command Check

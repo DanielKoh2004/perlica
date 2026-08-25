@@ -266,8 +266,13 @@ async def test_telemetry_logging_and_historical_snapshot_survival(seeded_copilot
         mock_groq_instance.chat.completions.create = AsyncMock(side_effect=mock_groq_create)
 
         res = await synthesize_copilot_answer(db, "What is the fuel price in calculate_fuel_details?")
-        answer_id = res["answer_id"]
+        answer_id = res.answer_id
         assert answer_id is not None
+        assert res.status == "SUCCESS"
+        assert len(res.citations) > 0
+        assert len(res.evidence_ids) > 0
+        assert res.coverage.status == "COMPLETE"
+        assert res.citations[0].label is not None
 
         # Verify telemetry was recorded in retrieval_logs
         async with db.get_connection() as conn:

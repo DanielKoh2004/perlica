@@ -1,7 +1,7 @@
 import re
 import discord
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from src.extractor import ExtractedPayload, QueryScope
 
 
@@ -1656,76 +1656,256 @@ def format_upcoming_holidays_embed(
     return embed
 
 
-def sanitize_discord_response_markdown(text: str) -> str:
-    """Clean up markdown text to render beautifully inside Discord embeds."""
-    if not text:
-        return ""
-    # Convert HTML line breaks <br>, <br/>, <br /> to newlines
-    cleaned = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    # Strip HTML tags
-    cleaned = re.sub(r"</?[a-zA-Z0-9]+(?:\s+[^>]*)?>", "", cleaned)
-    # Convert markdown table separator rows |---|---| to blank lines
-    cleaned = re.sub(r"\n\|[-:\s|]+\|\n", "\n\n", cleaned)
+def convert_markdown_tables_to_bullets(text: str) -> str:
+    """Convert markdown tables to clean structured bullet lists with bold keys."""
+    if not text or "|" not in text:
+        return text
 
-    # Convert pipe-separated markdown table rows into clean bullet points
-    lines = cleaned.split("\n")
-    formatted_lines = []
+    lines = text.split("\n")
+    formatted_lines: List[str] = []
+    in_table = False
+    table_headers: List[str] = []
+
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("|") and stripped.endswith("|") and not re.match(r"^\|[-:\s|]+\|$", stripped):
-            cells = [c.strip() for c in stripped.split("|") if c.strip()]
+        # Check for table separator row e.g. |---|---|
+        if re.match(r"^\|?\s*[-:\s|]+\s*\|?$", stripped) and "-" in stripped and "|" in stripped:
+            in_table = True
+            continue
+
+        # Check for pipe table row
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip() for c in stripped.split("|")[1:-1] if c.strip()]
             if not cells:
                 continue
-            if len(cells) == 1:
-                formatted_lines.append(f"• {cells[0]}")
-            else:
-                formatted_lines.append(f"• **{cells[0]}**: " + " — ".join(cells[1:]))
+            if not in_table and not table_headers:
+                table_headers = cells
+                formatted_lines.append(f"**{' / '.join(cells)}**")
+                continue
+            elif in_table or table_headers:
+                if len(cells) == 1:
+                    formatted_lines.append(f"• {cells[0]}")
+                elif table_headers and len(table_headers) == len(cells):
+                    item_title = cells[0]
+                    sub_details = [f"{table_headers[idx]}: {cells[idx]}" for idx in range(1, len(cells))]
+                    formatted_lines.append(f"• **{item_title}** (" + ", ".join(sub_details) + ")")
+                else:
+                    formatted_lines.append(f"• **{cells[0]}**: " + " — ".join(cells[1:]))
+                continue
         else:
+            in_table = False
+            table_headers = []
             formatted_lines.append(line)
-    
-    cleaned = "\n".join(formatted_lines)
+
+    return "\n".join(formatted_lines)
+
+
+def sanitize_discord_response_markdown(text: str) -> str:
+    """Clean up markdown text to render cleanly and safely inside Discord embeds."""
+    if not text:
+        return ""
+    # Strip script/iframe/hostile tags completely
+    cleaned = re.sub(r"<(?:script|style|iframe|object|embed)[^>]*>.*?</(?:script|style|iframe|object|embed)>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Convert HTML line breaks <br>, <br/>, <br /> to newlines
+    cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
+    # Convert HTML lists <li> to bullets
+    cleaned = re.sub(r"<li\s*>(.*?)</li>", r"• \1\n", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    # Strip remaining HTML tags
+    cleaned = re.sub(r"</?[a-zA-Z0-9]+(?:\s+[^>]*)?>", "", cleaned)
+    # Convert markdown tables to bullets
+    cleaned = convert_markdown_tables_to_bullets(cleaned)
+    # Normalize excessive blank lines
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 
-def format_copilot_answer_embed(answer_data: Dict[str, Any]) -> discord.Embed:
-    """Format an Evidence-Grounded Copilot answer with source citations."""
-    status = answer_data.get("status", "SUCCESS")
-    query = answer_data.get("query", "")
-    raw_response = answer_data.get("response", "")
+def format_citations_field(citations: Any) -> Optional[Dict[str, str]]:
+    """Format deterministic source citations into a clean Discord embed field."""
+    if not citations:
+        return None
+
+    lines = []
+    for cit in citations[:6]:
+        label = cit.get("label") if isinstance(cit, dict) else getattr(cit, "label", getattr(cit, "citation", "Source"))
+        permalink = cit.get("permalink") if isinstance(cit, dict) else getattr(cit, "permalink", None)
+        if permalink:
+            lines.append(f"• [{label}]({permalink})")
+        else:
+            lines.append(f"• **{label}**")
+
+    if not lines:
+        return None
+
+    return {
+        "name": "📚 Grounded Source Citations",
+        "value": "\n".join(lines)[:1024],
+        "inline": False,
+    }
+
+
+def format_coverage_badge(coverage: Any) -> str:
+    """Format footer text for source coverage and grounding guarantee."""
+    if not coverage:
+        return "Grounded strictly in verified evidence | Zero ghost chunks guarantee"
+
+    status = coverage.get("status") if isinstance(coverage, dict) else getattr(coverage, "status", "COMPLETE")
+    ratio = coverage.get("ratio") if isinstance(coverage, dict) else getattr(coverage, "ratio", None)
+    target = coverage.get("target_source") if isinstance(coverage, dict) else getattr(coverage, "target_source", None)
+
+    if status == "PARTIAL":
+        details = f" ({ratio})" if ratio else ""
+        src_info = f" in {target}" if target else ""
+        return f"🟡 Partial Coverage{src_info}{details} · Absence from index does not prove absence"
+    elif status == "EMPTY":
+        return "⚪ No matching evidence found in indexed knowledge"
+    else:
+        details = f" · {ratio}" if ratio else ""
+        return f"🟢 Complete Coverage{details} · Grounded strictly in verified evidence"
+
+
+def format_answer_sections(text: str) -> List[Tuple[str, str]]:
+    """Parse markdown text into structured (title, content) sections with 1024-char field chunking."""
+    if not text:
+        return []
+
+    lines = text.split("\n")
+    sections: List[Tuple[str, str]] = []
+    current_title = ""
+    current_lines: List[str] = []
+
+    for line in lines:
+        header_match = re.match(r"^(?:#{1,4}\s+|\*\*)([^*\n#]+)(?:\*\*|:)?\s*$", line.strip())
+        if header_match and len(current_lines) > 0:
+            content_str = "\n".join(current_lines).strip()
+            if content_str:
+                sections.append((current_title, content_str))
+            current_title = header_match.group(1).strip()
+            current_lines = []
+        elif header_match and not current_lines:
+            current_title = header_match.group(1).strip()
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        content_str = "\n".join(current_lines).strip()
+        if content_str:
+            sections.append((current_title, content_str))
+
+    if not sections and text.strip():
+        sections = [("", text.strip())]
+
+    # Chunk any section whose content exceeds 1024 characters
+    chunked_sections: List[Tuple[str, str]] = []
+    for title, content in sections:
+        if len(content) <= 1024:
+            chunked_sections.append((title, content))
+        else:
+            sub_chunks = []
+            current_sub = ""
+            for p in content.split("\n"):
+                if len(current_sub) + len(p) + 1 <= 1000:
+                    current_sub = f"{current_sub}\n{p}".strip()
+                else:
+                    if current_sub:
+                        sub_chunks.append(current_sub)
+                    current_sub = p
+            if current_sub:
+                sub_chunks.append(current_sub)
+            for idx, sc in enumerate(sub_chunks):
+                sub_title = title if idx == 0 else f"{title} (Part {idx+1})"
+                chunked_sections.append((sub_title, sc[:1024]))
+
+    return chunked_sections
+
+
+def format_copilot_answer_embeds(answer_data: Any) -> List[discord.Embed]:
+    """Format a CopilotAnswer into one or more Discord embeds adhering strictly to all API limits."""
+    status = answer_data.get("status") if isinstance(answer_data, dict) else getattr(answer_data, "status", "SUCCESS")
+    query = answer_data.get("query") if isinstance(answer_data, dict) else getattr(answer_data, "query", "")
+    raw_response = (
+        (answer_data.get("answer") or answer_data.get("response", ""))
+        if isinstance(answer_data, dict)
+        else getattr(answer_data, "answer", getattr(answer_data, "response", ""))
+    )
+    citations = answer_data.get("citations", []) if isinstance(answer_data, dict) else getattr(answer_data, "citations", [])
+    coverage = answer_data.get("coverage") if isinstance(answer_data, dict) else getattr(answer_data, "coverage", None)
+
     response = sanitize_discord_response_markdown(raw_response)
-    citations = answer_data.get("citations", [])
 
     if status == "ABSTAINED":
         embed = discord.Embed(
             title="🔍 Evidence Copilot: Abstention Notice",
-            description=response,
+            description=response[:4096],
             color=discord.Color.dark_grey(),
         )
-        embed.set_footer(text="Grounded in indexed evidence | Abstains when evidence is insufficient.")
-        return embed
+        embed.set_footer(text=format_coverage_badge(coverage)[:2048])
+        return [embed]
 
-    embed = discord.Embed(
-        title=f"🤖 Copilot: {query[:60]}..." if len(query) > 60 else f"🤖 Copilot: {query}",
-        description=response[:4000],
+    embeds: List[discord.Embed] = []
+    title_str = f"🤖 Copilot: {query[:60]}..." if len(query) > 60 else f"🤖 Copilot: {query}"
+
+    # Check if answer fits in a single embed description
+    if len(response) <= 2000 and "\n#" not in response:
+        embed = discord.Embed(
+            title=title_str,
+            description=response[:4096],
+            color=discord.Color.teal(),
+        )
+        cit_field = format_citations_field(citations)
+        if cit_field:
+            embed.add_field(name=cit_field["name"][:256], value=cit_field["value"][:1024], inline=False)
+        embed.set_footer(text=format_coverage_badge(coverage)[:2048])
+        return [embed]
+
+    # Section-based formatting for rich structured answers
+    sections = format_answer_sections(response)
+    current_embed = discord.Embed(
+        title=title_str,
         color=discord.Color.teal(),
     )
+    current_char_count = len(title_str)
 
-    if citations:
-        citation_lines = []
-        for i, cit in enumerate(citations[:6]):
-            permalink = cit.get("permalink")
-            label = cit.get("citation", f"Source {i+1}")
-            citation_lines.append(f"• **{label}**")
+    first_title, first_content = sections[0] if sections else ("", "")
+    if not first_title and first_content:
+        current_embed.description = first_content[:4096]
+        current_char_count += len(current_embed.description)
+        sections = sections[1:]
 
-        embed.add_field(
-            name="📚 Grounded Source Citations",
-            value="\n".join(citation_lines),
-            inline=False,
-        )
+    for title, content in sections:
+        field_name = title[:256] if title else "Overview"
+        field_val = content[:1024] if content else "..."
 
-    embed.set_footer(text="Grounded strictly in verified evidence | Click [📄 View Raw Source] to inspect excerpts.")
-    return embed
+        if len(current_embed.fields) >= 24 or (current_char_count + len(field_name) + len(field_val)) > 5500:
+            embeds.append(current_embed)
+            current_embed = discord.Embed(
+                title=f"{title_str} (Continued)",
+                color=discord.Color.teal(),
+            )
+            current_char_count = len(current_embed.title or "")
+
+        current_embed.add_field(name=field_name, value=field_val, inline=False)
+        current_char_count += len(field_name) + len(field_val)
+
+    # Add citations field
+    cit_field = format_citations_field(citations)
+    if cit_field:
+        if len(current_embed.fields) >= 25 or (current_char_count + len(cit_field["name"]) + len(cit_field["value"])) > 5800:
+            embeds.append(current_embed)
+            current_embed = discord.Embed(
+                title=f"{title_str} (Citations)",
+                color=discord.Color.teal(),
+            )
+        current_embed.add_field(name=cit_field["name"][:256], value=cit_field["value"][:1024], inline=False)
+
+    current_embed.set_footer(text=format_coverage_badge(coverage)[:2048])
+    embeds.append(current_embed)
+    return embeds
+
+
+def format_copilot_answer_embed(answer_data: Any) -> discord.Embed:
+    """Format a CopilotAnswer into a primary Discord embed (returns main embed)."""
+    embeds = format_copilot_answer_embeds(answer_data)
+    return embeds[0]
 
 
 def format_sources_dashboard_embed(sources_summary: List[Dict[str, Any]]) -> discord.Embed:
