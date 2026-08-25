@@ -1711,77 +1711,63 @@ async def slash_repo(
     )
 
 
-@bot.tree.command(name="ingest", description="Ingest a webpage URL, local PDF, or uploaded document into the knowledge base")
-@app_commands.describe(
-    source_type="Type of source to ingest",
-    target="Webpage URL or path to PDF (leave empty if uploading attachment)",
-    file="Optional PDF file to upload directly",
-)
-@app_commands.choices(source_type=[
-    app_commands.Choice(name="🌐 Web Page URL", value="web"),
-    app_commands.Choice(name="📄 PDF Document", value="pdf"),
-])
-async def slash_ingest(
+ingest_group = app_commands.Group(name="ingest", description="Ingest external knowledge documents or URLs into the Copilot index")
+
+
+@ingest_group.command(name="doc", description="Upload a PDF document to index into the knowledge base")
+@app_commands.describe(file="Select or drag-and-drop a PDF file to index")
+async def ingest_doc(
     interaction: discord.Interaction,
-    source_type: app_commands.Choice[str],
-    target: Optional[str] = None,
-    file: Optional[discord.Attachment] = None,
+    file: discord.Attachment,
 ):
     if not is_user_authorized_for_copilot(interaction.user.id):
         await interaction.response.send_message("⛔ You are not authorized to ingest sources.", ephemeral=True)
         return
 
-    if source_type.value == "web":
-        if not target:
-            await interaction.response.send_message("❌ Please provide a webpage URL in the `target` field.", ephemeral=True)
-            return
-        target_clean = target.strip()
-        job_id = await db.create_ingestion_job(source_type="WEB", target_ref=target_clean)
-        asyncio.create_task(run_web_ingest_job(job_id, target_clean))
-        await interaction.response.send_message(
-            f"🌐 **Web Ingestion Queued (Job #{job_id})**\n"
-            f"Fetching and parsing `{target_clean}` with SSRF safety in the background.",
-            ephemeral=True
-        )
-    else:  # PDF
-        if file:
-            # User uploaded a file directly via slash command
-            pdf_bytes = await file.read()
-            os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
-            safe_filename = os.path.basename(file.filename)
-            dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
-            with open(dest_path, "wb") as f:
-                f.write(pdf_bytes)
-            job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
-            asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
-            await interaction.response.send_message(
-                f"📄 **PDF Ingestion Queued (Job #{job_id})**\n"
-                f"Extracting pages from uploaded `{safe_filename}` in the background.",
-                ephemeral=True
-            )
-            return
+    if not file.filename.lower().endswith(".pdf"):
+        await interaction.response.send_message("❌ Only `.pdf` files are supported for document indexing.", ephemeral=True)
+        return
 
-        if not target:
-            await interaction.response.send_message("❌ Please provide a PDF file path in `target` or attach a file in `file`.", ephemeral=True)
-            return
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    pdf_bytes = await file.read()
+    os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
+    safe_filename = os.path.basename(file.filename)
+    dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
+    with open(dest_path, "wb") as f:
+        f.write(pdf_bytes)
 
-        target_clean = target.strip()
-        if not os.path.exists(target_clean):
-            # Check relative to KNOWLEDGE_DIR
-            alt_path = os.path.join(settings.KNOWLEDGE_DIR, target_clean)
-            if os.path.exists(alt_path):
-                target_clean = alt_path
-            else:
-                await interaction.response.send_message(f"❌ PDF file not found at path: `{target_clean}`", ephemeral=True)
-                return
+    job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
+    asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
+    await interaction.followup.send(
+        f"📄 **Knowledge Document Ingestion Queued (Job #{job_id})**\n"
+        f"Extracting and vector-indexing `{safe_filename}` in the background.\n"
+        f"Use `/sources` to view live status or `? <query>` to search!",
+        ephemeral=True
+    )
 
-        job_id = await db.create_ingestion_job(source_type="PDF", target_ref=target_clean)
-        asyncio.create_task(run_pdf_ingest_job(job_id, target_clean))
-        await interaction.response.send_message(
-            f"📄 **PDF Ingestion Queued (Job #{job_id})**\n"
-            f"Extracting page-level text from `{os.path.basename(target_clean)}` in the background.",
-            ephemeral=True
-        )
+
+@ingest_group.command(name="url", description="Ingest a public webpage or documentation URL into the knowledge base")
+@app_commands.describe(url="Webpage URL (e.g. https://docs.example.com)")
+async def ingest_url(
+    interaction: discord.Interaction,
+    url: str,
+):
+    if not is_user_authorized_for_copilot(interaction.user.id):
+        await interaction.response.send_message("⛔ You are not authorized to ingest sources.", ephemeral=True)
+        return
+
+    url_clean = url.strip()
+    job_id = await db.create_ingestion_job(source_type="WEB", target_ref=url_clean)
+    asyncio.create_task(run_web_ingest_job(job_id, url_clean))
+    await interaction.response.send_message(
+        f"🌐 **Web Ingestion Queued (Job #{job_id})**\n"
+        f"Fetching and parsing `{url_clean}` with SSRF safety in the background.\n"
+        f"Use `/sources` to view live status or `? <query>` to search!",
+        ephemeral=True
+    )
+
+
+bot.tree.add_command(ingest_group)
 
 
 @bot.tree.command(name="note", description="Quickly save an instant note into the SQLite knowledge index")
