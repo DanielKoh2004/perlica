@@ -363,3 +363,25 @@ def test_top_citations_header_label_when_more_than_six_citations():
     emb = embeds[0]
     cit_field = [f for f in emb.fields if "Citations" in f.name][0]
     assert "Top Grounded Source Citations (showing top 6 of 8)" in cit_field.name
+
+
+def test_code_block_safe_section_chunking_preserves_syntax_fences():
+    from src.formatters import chunk_section_content_safely, format_answer_sections
+
+    # Build a section with a large code block that exceeds 1000 characters
+    long_code_lines = [f"    line_{i} = calculate_value({i})  # step logic {i}" for i in range(1, 40)]
+    long_code = "\n".join(long_code_lines)
+
+    raw_section = f"Intro explanation of the logic:\n```python\n{long_code}\n```\nConcluding summary."
+
+    chunks = chunk_section_content_safely(raw_section, max_chars=950)
+    assert len(chunks) >= 2
+
+    # Invariant: Chunk 1 MUST end with closing ```
+    assert chunks[0].endswith("```")
+    # Invariant: Chunk 2 MUST start with ```python
+    assert chunks[1].startswith("```python")
+
+    # Invariant: All chunks must be <= 1024 chars
+    for c in chunks:
+        assert len(c) <= 1024

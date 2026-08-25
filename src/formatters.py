@@ -1749,6 +1749,8 @@ def sanitize_prose_segment(text: str) -> str:
     cleaned = re.sub(rf"</?(?:{KNOWN_HTML_TAGS})(?:\s+[^>]*)?>", "", cleaned, flags=re.IGNORECASE)
     # Convert prose markdown tables to structured bullets
     cleaned = convert_markdown_tables_to_bullets(cleaned)
+    # Convert deep subheadings (#### or #####) into clean bold bullet/prose lines
+    cleaned = re.sub(r"(?m)^#{4,6}\s*(.+)$", r"**\1**", cleaned)
     return cleaned
 
 
@@ -1822,6 +1824,57 @@ def format_coverage_badge(coverage: Any) -> str:
         return f"🟢 Complete Coverage{details} · Grounded strictly in verified evidence"
 
 
+def chunk_section_content_safely(text: str, max_chars: int = 950) -> List[str]:
+    """
+    Chunk section text into sub-blocks <= max_chars without corrupting fenced code blocks.
+    If a split must occur inside a code block, safely closes the open fence (```) at the end
+    of the chunk and reopens it (```<lang>) at the start of the next chunk.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    lines = text.split("\n")
+    chunks: List[str] = []
+    current_lines: List[str] = []
+    current_char_count = 0
+    in_code_block = False
+    code_lang = ""
+
+    for line in lines:
+        line_len = len(line) + 1
+        fence_match = re.match(r"^```(\w*)", line.strip())
+
+        # Check if adding this line exceeds the budget
+        if current_char_count + line_len > max_chars and current_lines:
+            if in_code_block:
+                current_lines.append("```")
+                chunks.append("\n".join(current_lines))
+                current_lines = [f"```{code_lang}"]
+                current_char_count = len(current_lines[0]) + 1
+            else:
+                chunks.append("\n".join(current_lines))
+                current_lines = []
+                current_char_count = 0
+
+        current_lines.append(line)
+        current_char_count += line_len
+
+        if fence_match:
+            if not in_code_block:
+                in_code_block = True
+                code_lang = fence_match.group(1)
+            else:
+                in_code_block = False
+                code_lang = ""
+
+    if current_lines:
+        if in_code_block:
+            current_lines.append("```")
+        chunks.append("\n".join(current_lines))
+
+    return chunks
+
+
 def format_answer_sections(text: str) -> List[Tuple[str, str]]:
     """Parse markdown text into structured (title, content) sections with 1024-char field chunking."""
     if not text:
@@ -1833,7 +1886,7 @@ def format_answer_sections(text: str) -> List[Tuple[str, str]]:
     current_lines: List[str] = []
 
     for line in lines:
-        header_match = re.match(r"^(?:#{1,4}\s+|\*\*)([^*\n#]+)(?:\*\*|:)?\s*$", line.strip())
+        header_match = re.match(r"^(?:#{1,6}\s+|\*\*)([^*\n#]+)(?:\*\*|:)?\s*$", line.strip())
         if header_match and len(current_lines) > 0:
             content_str = "\n".join(current_lines).strip()
             if content_str:
@@ -1853,23 +1906,13 @@ def format_answer_sections(text: str) -> List[Tuple[str, str]]:
     if not sections and text.strip():
         sections = [("", text.strip())]
 
-    # Chunk any section whose content exceeds 1024 characters
+    # Chunk any section whose content exceeds 1024 characters safely
     chunked_sections: List[Tuple[str, str]] = []
     for title, content in sections:
         if len(content) <= 1024:
             chunked_sections.append((title, content))
         else:
-            sub_chunks = []
-            current_sub = ""
-            for p in content.split("\n"):
-                if len(current_sub) + len(p) + 1 <= 1000:
-                    current_sub = f"{current_sub}\n{p}".strip()
-                else:
-                    if current_sub:
-                        sub_chunks.append(current_sub)
-                    current_sub = p
-            if current_sub:
-                sub_chunks.append(current_sub)
+            sub_chunks = chunk_section_content_safely(content, max_chars=950)
             for idx, sc in enumerate(sub_chunks):
                 sub_title = title if idx == 0 else f"{title} (Part {idx+1})"
                 chunked_sections.append((sub_title, sc[:1024]))
