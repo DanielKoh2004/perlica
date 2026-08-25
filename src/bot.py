@@ -36,6 +36,7 @@ from src.formatters import (
     format_goals_overview,
     format_search_results,
     format_calendar_day_view,
+    format_investments_overview,
     generate_html_report,
 )
 
