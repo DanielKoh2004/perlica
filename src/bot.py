@@ -2518,22 +2518,31 @@ async def on_message(message: discord.Message):
             elif any(lower_name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
                 image_attachment = att
             elif lower_name.endswith(".pdf"):
-                if not is_user_authorized_for_copilot(message.author.id):
-                    await message.reply("⛔ You are not authorized to upload knowledge documents.")
-                    return
                 async with message.channel.typing():
                     pdf_bytes = await att.read()
-                    os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
-                    safe_filename = os.path.basename(att.filename)
-                    dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
-                    with open(dest_path, "wb") as f:
-                        f.write(pdf_bytes)
-                    job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
-                    asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
+                    from pypdf import PdfReader
+                    now_local = datetime.datetime.now(settings.tz)
+                    try:
+                        reader = PdfReader(io.BytesIO(pdf_bytes))
+                        extracted_text = ""
+                        for page in reader.pages[:10]:
+                            extracted_text += (page.extract_text() or "") + "\n"
+                        extracted_text = extracted_text.strip()
+                    except Exception as e:
+                        logger.warning(f"Failed to read PDF pages: {e}")
+                        extracted_text = ""
+
+                    if extracted_text:
+                        combined_prompt = f"{content}\n\nInvoice/Receipt PDF Document text:\n{extracted_text[:3000]}"
+                        payload = await extractor.extract_from_text(combined_prompt, now_local)
+                        if payload and (payload.expenses or payload.tasks or payload.recurring_bills):
+                            await handle_action_preview_flow(message, payload)
+                            return
+
                     await message.reply(
-                        f"📄 **PDF Ingestion Queued (Job #{job_id})**\n"
-                        f"Extracting pages from `{safe_filename}` in the background.\n"
-                        f"Use `/sources` to view status or `? <query>` to search!"
+                        "⚠️ **No expense or bill details detected in this PDF.**\n"
+                        "• All direct uploads in chat are treated as receipts/invoices for expense tracking.\n"
+                        "• To index a document into your searchable **Knowledge Base**, use the `/ingest` command!"
                     )
                 return
 
