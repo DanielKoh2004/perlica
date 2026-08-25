@@ -2,10 +2,11 @@ import os
 import io
 import re
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import aiosqlite
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Tuple, Any, AsyncGenerator
+from src.config import settings
 
 
 def normalize_canonical_asset(raw_name: Optional[str]) -> Tuple[str, str]:
@@ -1703,6 +1704,48 @@ class DatabaseManager:
                 cumulative_liters = details["new_total_ron95_liters"]
 
         return cumulative_liters
+
+    async def find_recent_similar_expense(
+        self,
+        amount: float,
+        category: str,
+        window_minutes: int = 5,
+        now_local: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if an identical expense (same amount and category) was recorded within the last N minutes.
+        Uses timezone-aligned comparison to prevent UTC-to-MYR offset drift.
+        Returns: { ...expense_row, 'minutes_ago': int } or None
+        """
+        if now_local is None:
+            now_local = datetime.now(settings.tz)
+        elif now_local.tzinfo is None:
+            now_local = now_local.replace(tzinfo=settings.tz)
+
+        threshold_dt = now_local - timedelta(minutes=window_minutes)
+        threshold_str = threshold_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT * FROM expenses
+                WHERE amount = ? AND category = ? AND created_at >= ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (amount, category, threshold_str),
+            ) as cur:
+                row = await cur.fetchone()
+                if not row:
+                    return None
+
+                res = dict(row)
+                try:
+                    created_dt = datetime.strptime(res["created_at"][:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=settings.tz)
+                    diff_mins = max(0, int((now_local - created_dt).total_seconds() / 60))
+                except Exception:
+                    diff_mins = 0
+                res["minutes_ago"] = diff_mins
+                return res
 
 
 def classify_fuel_expense(category: str, note: Optional[str]) -> Optional[Dict[str, Any]]:

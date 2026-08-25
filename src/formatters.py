@@ -59,13 +59,31 @@ def format_action_preview(
     tasks: List[Dict[str, Any]],
     completed_task_ids: List[int],
     target_goal_name: Optional[str] = None,
+    duplicate_warning: Optional[Dict[str, Any]] = None,
 ) -> discord.Embed:
     """Build a rich preview embed for user review before committing to database."""
+    color = discord.Color.orange() if duplicate_warning else discord.Color.gold()
     embed = discord.Embed(
-        title="📋 Action Ingestion Preview",
+        title="⚠️ Action Ingestion Preview (Duplicate Warning)" if duplicate_warning else "📋 Action Ingestion Preview",
         description="Please review what will be recorded. Click **Confirm** to save, **Edit** to modify, or **Reject** to discard.",
-        color=discord.Color.gold(),
+        color=color,
     )
+
+    # 0. Duplicate Collision Warning Field
+    if duplicate_warning:
+        mins = duplicate_warning.get("minutes_ago", 0)
+        time_text = "just now" if mins == 0 else f"{mins} min ago"
+        note_text = f" ({duplicate_warning['note']})" if duplicate_warning.get("note") else ""
+        embed.add_field(
+            name="⚠️ Potential Duplicate Detected",
+            value=(
+                f"An identical expense of **RM {duplicate_warning['amount']:.2f}** in `{duplicate_warning['category']}`{note_text} "
+                f"was already recorded **{time_text}** (`[#{duplicate_warning['id']}]`).\n"
+                f"• If this is a separate purchase, click **[Log Anyway]**.\n"
+                f"• If this is an accidental double-entry, click **[Discard Duplicate]**."
+            ),
+            inline=False,
+        )
 
     # 1. Expenses & Wealth Investments Preview
     if expenses:

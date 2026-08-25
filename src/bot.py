@@ -814,10 +814,20 @@ class ActionIngestionView(discord.ui.View):
         on_confirm: Callable[[discord.Interaction], Any],
         payload: ExtractedPayload,
         timeout: float = 300.0,
+        is_duplicate: bool = False,
     ):
         super().__init__(timeout=timeout)
         self.on_confirm = on_confirm
         self.payload = payload
+        self.is_duplicate = is_duplicate
+
+        if is_duplicate:
+            self.confirm_button.label = "Log Anyway"
+            self.confirm_button.style = discord.ButtonStyle.primary
+            self.confirm_button.emoji = "⚠️"
+            self.reject_button.label = "Discard Duplicate"
+            self.reject_button.style = discord.ButtonStyle.danger
+            self.reject_button.emoji = "🗑️"
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, emoji="✅", custom_id="btn_confirm_ingest")
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1943,14 +1953,24 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
             except Exception as e:
                 logger.debug(f"Milestone celebratory followup note: {e}")
 
+        # Check for potential duplicate expense collisions within 5 minutes
+    duplicate_warning = None
+    if payload.expenses:
+        first_exp = payload.expenses[0]
+        cat_val = first_exp.category.value if hasattr(first_exp.category, "value") else str(first_exp.category)
+        dup = await db.find_recent_similar_expense(first_exp.amount, cat_val, window_minutes=5, now_local=now_local)
+        if dup:
+            duplicate_warning = dup
+
     preview_embed = format_action_preview(
         payload=payload,
         expenses=expenses_preview,
         tasks=tasks_preview,
         completed_task_ids=payload.completed_task_ids,
         target_goal_name=target_goal_name,
+        duplicate_warning=duplicate_warning,
     )
-    view = ActionIngestionView(on_confirm=on_confirm, payload=payload)
+    view = ActionIngestionView(on_confirm=on_confirm, payload=payload, is_duplicate=bool(duplicate_warning))
 
     if from_interaction:
         await target.response.send_message(embed=preview_embed, view=view)
