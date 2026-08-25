@@ -381,32 +381,139 @@ async def test_failed_processing_does_not_purge_remote_file(temp_db):
 
 
 @pytest.mark.asyncio
-async def test_secret_exclusion_does_not_purge_remote_file(temp_db):
+async def test_failed_processing_does_not_purge_remote_file(temp_db):
     """
-    Verify that files excluded due to secret detection are tracked in the manifest
-    without being treated as absent/deleted, and their chunks are purged.
+    Verify that transient network or parsing failures during a sync do NOT
+    cause the file to be purged from SQLite manifest.
+    """
+    source_id = await temp_db.get_or_create_source("Resilient Repo", "GITHUB", "github:DanielKoh2004/resilient-repo")
+
+    # Sync 1: file1.py is successfully indexed
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_auth_v1",
+        sync_id=1,
+        chunks=[{"section_title": "auth", "content": "def authenticate_user(): pass"}],
+        embeddings=[("bge-small-en-v1.5", b"\x00" * 1536)],
+    )
+    res1 = await temp_db.fts_search_knowledge("authenticate_user", source_id=source_id)
+    assert len(res1) == 1
+
+    # Sync 2: src/auth.py still exists in remote tree, but GitHub fetch fails transiently
+    await temp_db.mark_source_file_failed(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_auth_v2",
+        sync_id=2,
+        status="FAILED_FETCH",
+    )
+
+    # Purge unseen files for Sync 2 -> 0 files purged because auth.py was seen
+    purged = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=2)
+    assert purged == 0
+
+    # Invariant check: source_files entry is FAILED_FETCH and manifest is preserved
+    manifest = await temp_db.get_source_files_manifest(source_id)
+    assert "src/auth.py" in manifest
+    assert manifest["src/auth.py"]["status"] == "FAILED_FETCH"
+    assert manifest["src/auth.py"]["last_seen_sync_id"] == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_file_is_not_retrievable(temp_db):
+    """
+    Invariant: Only files whose current sync status is 'INDEXED' participate in retrieval.
+    Chunks of failed files are not exposed to the LLM to prevent presenting stale evidence as current.
+    """
+    source_id = await temp_db.get_or_create_source("Stale Guard Repo", "GITHUB", "github:DanielKoh2004/stale-guard")
+
+    # Sync 1: auth.py is indexed and searchable
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_v1",
+        sync_id=1,
+        chunks=[{"section_title": "auth", "content": "def verify_legacy_token(): pass"}],
+        embeddings=[("bge-small-en-v1.5", b"\x00" * 1536)],
+    )
+    res1 = await temp_db.fts_search_knowledge("verify_legacy_token", source_id=source_id)
+    assert len(res1) == 1
+
+    dense1 = await temp_db.get_all_chunks_with_embeddings(source_id=source_id)
+    assert len(dense1) == 1
+
+    # Sync 2: auth.py fails to fetch/parse -> marked FAILED_FETCH
+    await temp_db.mark_source_file_failed(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_v2",
+        sync_id=2,
+        status="FAILED_FETCH",
+    )
+
+    # Retrieval must return 0 results because status is FAILED_FETCH
+    res_failed = await temp_db.fts_search_knowledge("verify_legacy_token", source_id=source_id)
+    assert len(res_failed) == 0
+
+    dense_failed = await temp_db.get_all_chunks_with_embeddings(source_id=source_id)
+    assert len(dense_failed) == 0
+
+    # Sync 3: auth.py successfully reindexes with new content
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_v3",
+        sync_id=3,
+        chunks=[{"section_title": "auth", "content": "def verify_oauth_token(): pass"}],
+        embeddings=[("bge-small-en-v1.5", b"\x00" * 1536)],
+    )
+
+    # Searchable again!
+    res_restored = await temp_db.fts_search_knowledge("verify_oauth_token", source_id=source_id)
+    assert len(res_restored) == 1
+
+
+@pytest.mark.asyncio
+async def test_secret_exclusion_migration_purges_chunks_and_preserves_manifest(temp_db):
+    """
+    Verify the migration: a previously indexed file that later contains a secret is marked
+    EXCLUDED_SECRET, retained in the manifest without deletion, and its chunks are removed.
     """
     source_id = await temp_db.get_or_create_source("Secret Repo", "GITHUB", "github:DanielKoh2004/secret-repo")
 
-    # Sync 1: File contains AWS secret and is excluded
+    # Sync 1: config.py is indexed normally
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="config/keys.py",
+        blob_sha="sha_clean",
+        sync_id=1,
+        chunks=[{"section_title": "keys", "content": "PUBLIC_KEY = '123'"}],
+        embeddings=[("bge-small-en-v1.5", b"\x00" * 1536)],
+    )
+    res1 = await temp_db.fts_search_knowledge("PUBLIC_KEY", source_id=source_id)
+    assert len(res1) == 1
+
+    # Sync 2: config.py now contains a secret -> marked EXCLUDED_SECRET
     await temp_db.mark_source_file_secret_excluded(
         source_id=source_id,
-        file_path="config/aws_keys.py",
-        blob_sha="sha_secret_1",
-        sync_id=1,
+        file_path="config/keys.py",
+        blob_sha="sha_secret",
+        sync_id=2,
     )
 
-    # Purge unseen files for Sync 1 -> 0 files purged
-    purged = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=1)
+    # Purge unseen files -> 0 files purged because keys.py was seen in Sync 2
+    purged = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=2)
     assert purged == 0
 
     manifest = await temp_db.get_source_files_manifest(source_id)
-    assert "config/aws_keys.py" in manifest
-    assert manifest["config/aws_keys.py"]["status"] == "EXCLUDED_SECRET"
-    assert manifest["config/aws_keys.py"]["last_seen_sync_id"] == 1
+    assert "config/keys.py" in manifest
+    assert manifest["config/keys.py"]["status"] == "EXCLUDED_SECRET"
+    assert manifest["config/keys.py"]["last_seen_sync_id"] == 2
 
-    # Chunks are completely empty
-    async with temp_db.get_connection() as conn:
-        async with conn.execute("SELECT COUNT(*) as count FROM knowledge_chunks WHERE source_id = ?", (source_id,)) as cur:
-            row = await cur.fetchone()
-            assert row["count"] == 0
+    # Chunks are completely purged from FTS and dense index
+    res_secret = await temp_db.fts_search_knowledge("PUBLIC_KEY", source_id=source_id)
+    assert len(res_secret) == 0
+
+    dense_secret = await temp_db.get_all_chunks_with_embeddings(source_id=source_id)
+    assert len(dense_secret) == 0

@@ -1464,21 +1464,26 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
                 await db.mark_source_file_failed(source_id, path, blob_sha, sync_id=job_id, status="FAILED_PARSE")
                 continue
 
-            # Embed
-            texts = [c["content"] for c in chunks]
-            embs = await asyncio.to_thread(compute_embeddings_batch, texts)
-            emb_tuples = [(MODEL_ID, e) for e in embs]
+            # Embed & Atomic Commit
+            try:
+                texts = [c["content"] for c in chunks]
+                embs = await asyncio.to_thread(compute_embeddings_batch, texts)
+                emb_tuples = [(MODEL_ID, e) for e in embs]
 
-            # Short atomic commit
-            await db.commit_file_reconciliation(
-                source_id=source_id,
-                file_path=path,
-                blob_sha=blob_sha,
-                sync_id=job_id,
-                chunks=chunks,
-                embeddings=emb_tuples,
-            )
-            indexed_count += 1
+                # Short atomic commit
+                await db.commit_file_reconciliation(
+                    source_id=source_id,
+                    file_path=path,
+                    blob_sha=blob_sha,
+                    sync_id=job_id,
+                    chunks=chunks,
+                    embeddings=emb_tuples,
+                )
+                indexed_count += 1
+            except Exception as file_err:
+                logger.warning(f"Failed to embed/commit file '{path}': {file_err}")
+                await db.mark_source_file_failed(source_id, path, blob_sha, sync_id=job_id, status="FAILED_EMBED")
+                continue
 
         # Track eligible files beyond 250 cap so they are not mistakenly purged as deleted
         if capped_files:

@@ -2255,6 +2255,7 @@ class DatabaseManager:
                     JOIN sources s ON kc.source_id = s.id
                     LEFT JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE knowledge_chunks_fts MATCH ? AND kc.source_id = ?
+                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
                     ORDER BY bm25_rank ASC
                     LIMIT ?
                 """
@@ -2267,6 +2268,7 @@ class DatabaseManager:
                     JOIN sources s ON kc.source_id = s.id
                     LEFT JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE knowledge_chunks_fts MATCH ?
+                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
                     ORDER BY bm25_rank ASC
                     LIMIT ?
                 """
@@ -2304,6 +2306,7 @@ class DatabaseManager:
     ) -> List[Dict[str, Any]]:
         """
         Fetch all chunks with their pre-computed binary embedding vectors for NumPy cosine search.
+        Filters out files that failed to index or were excluded (only INDEXED files participate).
         """
         async with self.get_connection() as conn:
             if source_id is not None:
@@ -2314,6 +2317,7 @@ class DatabaseManager:
                     JOIN sources s ON kc.source_id = s.id
                     LEFT JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE ce.model_id = ? AND kc.source_id = ?
+                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
                 """
                 params = (model_id, source_id)
             else:
@@ -2324,6 +2328,7 @@ class DatabaseManager:
                     JOIN sources s ON kc.source_id = s.id
                     LEFT JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE ce.model_id = ?
+                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
                 """
                 params = (model_id,)
 
