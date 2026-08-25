@@ -44,6 +44,20 @@ class CopilotCoverage:
 
 @dataclass
 class CopilotAnswer:
+    """
+    Structured container for evidence-grounded Copilot responses.
+    
+    Attributes:
+        answer: Clean, grounded technical markdown synthesized by LLM.
+        query: Original user query.
+        citations: List of deterministic application-owned citations.
+        evidence_ids: List of chunk primary keys (int) for DB persistence & snapshot linking.
+        evidence: In-memory chunk dicts containing text/metadata for telemetry & debugging.
+        coverage: Explicit coverage metadata (status, ratio, target source).
+        answer_id: SQLite primary key in answers table.
+        status: SUCCESS or ABSTAINED.
+        telemetry: Retrieval metrics (top cosine, BM25 count, RRF results).
+    """
     answer: str
     query: str
     citations: List[CopilotCitation] = field(default_factory=list)

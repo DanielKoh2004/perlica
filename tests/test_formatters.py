@@ -274,3 +274,92 @@ def test_abstained_state_rendering():
     assert "Abstention Notice" in emb.title
     assert "No relevant evidence found" in emb.description
     assert "⚪ No matching evidence" in emb.footer.text
+
+
+def test_table_conversion_does_not_modify_fenced_code_blocks():
+    from src.formatters import sanitize_discord_response_markdown
+
+    input_markdown = (
+        "Here is the comparison:\n\n"
+        "| Feature | Status |\n"
+        "|---|---|\n"
+        "| Hybrid RAG | Enabled |\n\n"
+        "And here is the Python source code:\n\n"
+        "```python\n"
+        "# ASCII diagram inside code block must NOT be modified!\n"
+        "headers = ['|', '|']\n"
+        "table_mock = '''\n"
+        "|---|---|\n"
+        "| A | B |\n"
+        "'''\n"
+        "```\n\n"
+        "Also test inline `| a | b |` snippet."
+    )
+
+    cleaned = sanitize_discord_response_markdown(input_markdown)
+
+    # Invariant 1: Prose table is converted
+    assert "• **Hybrid RAG** (Status: Enabled)" in cleaned
+
+    # Invariant 2: Fenced code block content is preserved 100% byte-for-byte!
+    assert "```python\n# ASCII diagram inside code block must NOT be modified!\nheaders = ['|', '|']\ntable_mock = '''\n|---|---|\n| A | B |\n'''\n```" in cleaned
+
+    # Invariant 3: Inline code is preserved
+    assert "`| a | b |`" in cleaned
+
+
+def test_html_sanitizer_preserves_technical_generics_and_angle_brackets():
+    from src.formatters import sanitize_discord_response_markdown
+
+    technical_text = (
+        "Perlica supports List<T>, Map<K, V>, and std::vector<int>.<br>"
+        "Tokens such as <token_id> and <BEGIN UNTRUSTED EVIDENCE> should not be stripped if used in technical explanations.<br>"
+        "<b>Important:</b> <script>alert(1)</script> Only actual HTML tags get stripped."
+    )
+
+    cleaned = sanitize_discord_response_markdown(technical_text)
+
+    # Generics and technical angle brackets in prose are preserved
+    assert "List<T>" in cleaned
+    assert "Map<K, V>" in cleaned
+    assert "std::vector<int>" in cleaned
+    assert "<token_id>" in cleaned
+
+    # HTML tags are stripped/converted
+    assert "<br>" not in cleaned
+    assert "<b>" not in cleaned
+    assert "<script>" not in cleaned
+    assert "alert" not in cleaned
+
+
+def test_top_citations_header_label_when_more_than_six_citations():
+    from src.rag_engine import CopilotAnswer, CopilotCitation, CopilotCoverage
+    from src.formatters import format_copilot_answer_embeds
+
+    # Generate 8 citations
+    citations = [
+        CopilotCitation(
+            label=f"src/file_{i}.py:L1-L10",
+            permalink=f"https://github.com/DanielKoh2004/perlica/blob/main/src/file_{i}.py",
+            source_name="DanielKoh2004/perlica",
+            source_type="GITHUB",
+            location="L1-L10",
+            chunk_id=i,
+        )
+        for i in range(1, 9)
+    ]
+
+    answer = CopilotAnswer(
+        answer="Overview of multiple components across files.",
+        query="Where are components defined?",
+        citations=citations,
+        evidence_ids=list(range(1, 9)),
+        coverage=CopilotCoverage(status="COMPLETE"),
+        status="SUCCESS",
+    )
+
+    embeds = format_copilot_answer_embeds(answer)
+    assert len(embeds) == 1
+    emb = embeds[0]
+    cit_field = [f for f in emb.fields if "Citations" in f.name][0]
+    assert "Top Grounded Source Citations (showing top 6 of 8)" in cit_field.name

@@ -1656,6 +1656,39 @@ def format_upcoming_holidays_embed(
     return embed
 
 
+KNOWN_HTML_TAGS = r"(?:script|style|iframe|object|embed|br|hr|p|div|span|b|i|u|s|strong|em|ul|ol|li|table|thead|tbody|tr|td|th|h[1-6]|font|a|img|meta|link|pre|code|form|input|button)"
+
+
+def split_code_and_prose(text: str) -> List[Tuple[bool, str]]:
+    """
+    Split markdown text into a sequence of (is_code, content) segments.
+    Preserves both multi-line fenced code blocks (```...```) and inline code (`...`) byte-for-byte.
+    """
+    if not text:
+        return []
+
+    # Match fenced code blocks (```...```) or inline code (`...`)
+    pattern = re.compile(r"(```[\s\S]*?```|`[^`\n]+`)", re.MULTILINE)
+    parts: List[Tuple[bool, str]] = []
+    last_end = 0
+
+    for match in pattern.finditer(text):
+        start, end = match.span()
+        if start > last_end:
+            prose = text[last_end:start]
+            if prose:
+                parts.append((False, prose))
+        parts.append((True, match.group(0)))
+        last_end = end
+
+    if last_end < len(text):
+        prose = text[last_end:]
+        if prose:
+            parts.append((False, prose))
+
+    return parts
+
+
 def convert_markdown_tables_to_bullets(text: str) -> str:
     """Convert markdown tables to clean structured bullet lists with bold keys."""
     if not text or "|" not in text:
@@ -1700,23 +1733,45 @@ def convert_markdown_tables_to_bullets(text: str) -> str:
     return "\n".join(formatted_lines)
 
 
-def sanitize_discord_response_markdown(text: str) -> str:
-    """Clean up markdown text to render cleanly and safely inside Discord embeds."""
+def sanitize_prose_segment(text: str) -> str:
+    """Sanitize a prose segment without altering code blocks or generic angle brackets."""
     if not text:
         return ""
-    # Strip script/iframe/hostile tags completely
+    # Strip script/style/iframe/hostile blocks
     cleaned = re.sub(r"<(?:script|style|iframe|object|embed)[^>]*>.*?</(?:script|style|iframe|object|embed)>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    # Convert HTML line breaks <br>, <br/>, <br /> to newlines
+    # Convert HTML line breaks <br>, <br/> to newlines
     cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
-    # Convert HTML lists <li> to bullets
+    # Convert <hr> to markdown divider
+    cleaned = re.sub(r"<hr\s*/?>", "\n---\n", cleaned, flags=re.IGNORECASE)
+    # Convert HTML list items <li> to bullets
     cleaned = re.sub(r"<li\s*>(.*?)</li>", r"• \1\n", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    # Strip remaining HTML tags
-    cleaned = re.sub(r"</?[a-zA-Z0-9]+(?:\s+[^>]*)?>", "", cleaned)
-    # Convert markdown tables to bullets
+    # Strip only known HTML tags, preserving generics like List<T>, <int>, or <token>
+    cleaned = re.sub(rf"</?(?:{KNOWN_HTML_TAGS})(?:\s+[^>]*)?>", "", cleaned, flags=re.IGNORECASE)
+    # Convert prose markdown tables to structured bullets
     cleaned = convert_markdown_tables_to_bullets(cleaned)
+    return cleaned
+
+
+def sanitize_discord_response_markdown(text: str) -> str:
+    """
+    Clean up markdown text to render cleanly and safely inside Discord embeds.
+    Code blocks (```...```) and inline code (`...`) are preserved byte-for-byte intact.
+    """
+    if not text:
+        return ""
+
+    segments = split_code_and_prose(text)
+    sanitized_parts = []
+    for is_code, content in segments:
+        if is_code:
+            sanitized_parts.append(content)
+        else:
+            sanitized_parts.append(sanitize_prose_segment(content))
+
+    result = "".join(sanitized_parts)
     # Normalize excessive blank lines
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
 
 
 def format_citations_field(citations: Any) -> Optional[Dict[str, str]]:
@@ -1736,8 +1791,12 @@ def format_citations_field(citations: Any) -> Optional[Dict[str, str]]:
     if not lines:
         return None
 
+    title = "📚 Top Grounded Source Citations"
+    if len(citations) > 6:
+        title = f"📚 Top Grounded Source Citations (showing top 6 of {len(citations)})"
+
     return {
-        "name": "📚 Grounded Source Citations",
+        "name": title[:256],
         "value": "\n".join(lines)[:1024],
         "inline": False,
     }
@@ -1903,7 +1962,13 @@ def format_copilot_answer_embeds(answer_data: Any) -> List[discord.Embed]:
 
 
 def format_copilot_answer_embed(answer_data: Any) -> discord.Embed:
-    """Format a CopilotAnswer into a primary Discord embed (returns main embed)."""
+    """
+    Format a CopilotAnswer into a primary Discord embed (returns main embed).
+
+    .. deprecated::
+       Prefer `format_copilot_answer_embeds` which returns `List[discord.Embed]`
+       to avoid silently truncating long answers that span multiple embeds.
+    """
     embeds = format_copilot_answer_embeds(answer_data)
     return embeds[0]
 
