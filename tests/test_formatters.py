@@ -90,3 +90,33 @@ def test_format_action_confirmation():
     assert embed.title == "⚡ Action Processed"
     field_names = [f.name for f in embed.fields]
     assert any("Budget Alert" in name for name in field_names)
+
+
+def test_sanitize_discord_response_markdown_and_copilot_embed():
+    from src.formatters import sanitize_discord_response_markdown, format_copilot_answer_embed
+
+    raw_table_and_html = (
+        "Here is the breakdown:<br><br>"
+        "| Step | Action | Details |<br>"
+        "|---|---|---|<br>"
+        "| 1. Ingestion | Tree crawler | Fetches Git blobs |<br>"
+        "| 2. Vectorization | FastEmbed | Local ONNX vectors |<br>"
+        "<b>Summary complete.</b>"
+    )
+    cleaned = sanitize_discord_response_markdown(raw_table_and_html)
+    assert "<br>" not in cleaned
+    assert "<b>" not in cleaned
+    assert "• **1. Ingestion**: Tree crawler — Fetches Git blobs" in cleaned
+    assert "• **2. Vectorization**: FastEmbed — Local ONNX vectors" in cleaned
+
+    answer_data = {
+        "status": "SUCCESS",
+        "query": "How does ingestion work?",
+        "response": raw_table_and_html,
+        "citations": [{"citation": "src/github_sync.py:L10-L20", "permalink": "https://github.com/..."}],
+    }
+    embed = format_copilot_answer_embed(answer_data)
+    assert isinstance(embed, discord.Embed)
+    assert "<br>" not in embed.description
+    assert len(embed.fields) == 1
+    assert "Grounded Source Citations" in embed.fields[0].name
