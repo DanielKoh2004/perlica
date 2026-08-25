@@ -41,6 +41,9 @@ from src.formatters import (
     format_category_filtered_view,
     format_voice_transcription_preview,
     format_bill_reminder_embed,
+    format_transaction_page,
+    format_focus_task_embed,
+    get_time_aware_greeting,
     generate_html_report,
     render_progress_bar,
 )
@@ -571,6 +574,148 @@ class BillActionView(discord.ui.View):
         )
 
 
+class TransactionExplorerView(discord.ui.View):
+    """Stateless paginated transaction explorer view with delete select menu."""
+
+    def __init__(
+        self,
+        expenses: List[Dict[str, Any]],
+        month_str: str,
+        page: int,
+        total_pages: int,
+    ):
+        super().__init__(timeout=None)
+        self.month_str = month_str
+        self.page = page
+        self.total_pages = total_pages
+
+        prev_btn = discord.ui.Button(
+            label="Prev",
+            style=discord.ButtonStyle.secondary,
+            emoji="◀️",
+            custom_id=f"perlica:tx:p:{month_str}:{max(1, page - 1)}",
+            disabled=(page <= 1),
+        )
+        self.add_item(prev_btn)
+
+        page_btn = discord.ui.Button(
+            label=f"{page}/{total_pages}",
+            style=discord.ButtonStyle.primary,
+            disabled=True,
+            custom_id=f"perlica:tx:info:{page}",
+        )
+        self.add_item(page_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next",
+            style=discord.ButtonStyle.secondary,
+            emoji="▶️",
+            custom_id=f"perlica:tx:p:{month_str}:{min(total_pages, page + 1)}",
+            disabled=(page >= total_pages),
+        )
+        self.add_item(next_btn)
+
+        if expenses:
+            options = [
+                discord.SelectOption(
+                    label=f"#{e['id']} RM {e['amount']:.2f} — {e['category']}"[:100],
+                    description=f"{e['note'][:40]} | {e['created_at'][:10]}" if e.get("note") else e['created_at'][:10],
+                    value=str(e["id"]),
+                    emoji="🗑️",
+                )
+                for e in expenses[:25]
+            ]
+            select = discord.ui.Select(
+                placeholder="🗑️ Select an expense on this page to delete...",
+                options=options,
+                custom_id=f"perlica:tx:d:{month_str}:{page}",
+                min_values=1,
+                max_values=1,
+            )
+            self.add_item(select)
+
+
+class DailyFocusView(discord.ui.View):
+    """Stateless modulo-indexed focus mode view."""
+
+    def __init__(self, task_id: int, next_index: int):
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Button(
+                label="Complete Focus Task",
+                style=discord.ButtonStyle.success,
+                emoji="✅",
+                custom_id=f"perlica:foc:done:{task_id}",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Skip to Next",
+                style=discord.ButtonStyle.primary,
+                emoji="⏩",
+                custom_id=f"perlica:foc:i:{next_index}",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Snooze +1D",
+                style=discord.ButtonStyle.secondary,
+                emoji="⏰",
+                custom_id=f"perlica:foc:snz:{task_id}",
+            )
+        )
+
+
+class BudgetAdjustModal(discord.ui.Modal, title="✏️ Set / Adjust Monthly Budget"):
+    """Popup modal to set or adjust category budget limits."""
+
+    category_input = discord.ui.TextInput(
+        label="Category (Food & Dining, Transport, etc.)",
+        placeholder="e.g. Food & Dining",
+        required=True,
+        max_length=50,
+    )
+    limit_input = discord.ui.TextInput(
+        label="Monthly Limit (RM)",
+        placeholder="e.g. 800.00",
+        required=True,
+        max_length=20,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cat_text = self.category_input.value.strip()
+        limit = clean_float_input(self.limit_input.value, default=0.0)
+        cat_enum = resolve_category_from_text(cat_text)
+        cat_name = cat_enum.value if cat_enum else cat_text
+
+        if limit < 0:
+            await interaction.response.send_message("Budget limit must be >= 0.", ephemeral=True)
+            return
+
+        await db.set_budget(cat_name, limit)
+        now_local = datetime.datetime.now(settings.tz)
+        month_str = now_local.strftime("%Y-%m")
+        status = await db.get_budget_status(month_str)
+
+        embed = format_budget_overview(status)
+        await interaction.response.send_message(
+            content=f"✅ Monthly budget for **{cat_name}** set to **RM {limit:.2f}**!",
+            embed=embed,
+            view=BudgetDashboardView(),
+        )
+
+
+class BudgetDashboardView(discord.ui.View):
+    """View attached to /budgets with 1-tap budget adjustment modal button."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Adjust / Set Budget", style=discord.ButtonStyle.primary, emoji="✏️", custom_id="perlica:btn:adjust_budget")
+    async def adjust_budget_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BudgetAdjustModal())
+
+
 # --- INTERACTIVE DISCORD UI VIEWS ---
 
 class QuickUndoView(discord.ui.View):
@@ -1068,8 +1213,129 @@ async def on_interaction(interaction: discord.Interaction):
             await interaction.response.send_modal(GoalCreateModal())
             return
 
+        # 1-Tap Adjust Budget Modal
+        elif cid == "perlica:btn:adjust_budget":
+            await interaction.response.send_modal(BudgetAdjustModal())
+            return
+
+        # Transaction Explorer Pagination: perlica:tx:p:<YYYY-MM>:<page>
+        elif cid.startswith("perlica:tx:p:"):
+            parts = cid.split(":")
+            month_str = parts[3]
+            page = int(parts[4])
+            expenses, safe_page, total_pages, total_count = await db.get_paginated_expenses(month_str, page=page)
+            embed = format_transaction_page(expenses, safe_page, total_pages, total_count, month_str)
+            view = TransactionExplorerView(expenses, month_str, safe_page, total_pages)
+            await interaction.response.edit_message(embed=embed, view=view)
+            return
+
+        # Transaction Explorer Deletion Dropdown: perlica:tx:d:<YYYY-MM>:<page>
+        elif cid.startswith("perlica:tx:d:"):
+            parts = cid.split(":")
+            month_str = parts[3]
+            page = int(parts[4])
+            values = interaction.data.get("values", [])
+            if values:
+                exp_id = int(values[0])
+                await db.delete_expenses_by_ids([exp_id])
+
+            expenses, safe_page, total_pages, total_count = await db.get_paginated_expenses(month_str, page=page)
+            embed = format_transaction_page(expenses, safe_page, total_pages, total_count, month_str)
+            view = TransactionExplorerView(expenses, month_str, safe_page, total_pages)
+            await interaction.response.edit_message(embed=embed, view=view)
+            return
+
+        # Focus Task Complete: perlica:foc:done:<task_id>
+        elif cid.startswith("perlica:foc:done:"):
+            task_id = int(cid.split(":")[-1])
+            now_local = datetime.datetime.now(settings.tz)
+            now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+            await db.complete_tasks_by_ids([task_id], completed_at=now_str)
+
+            tasks = await db.get_highest_priority_tasks()
+            if not tasks:
+                embed = format_focus_task_embed(None, 0, 0)
+                await interaction.response.edit_message(embed=embed, view=None)
+            else:
+                embed = format_focus_task_embed(tasks[0], 0, len(tasks))
+                next_idx = 1 % len(tasks)
+                view = DailyFocusView(task_id=tasks[0]["id"], next_index=next_idx)
+                await interaction.response.edit_message(embed=embed, view=view)
+            return
+
+        # Focus Task Modulo Index Cycle: perlica:foc:i:<target_idx>
+        elif cid.startswith("perlica:foc:i:"):
+            target_idx = int(cid.split(":")[-1])
+            tasks = await db.get_highest_priority_tasks()
+            if not tasks:
+                embed = format_focus_task_embed(None, 0, 0)
+                await interaction.response.edit_message(embed=embed, view=None)
+            else:
+                safe_index = max(0, target_idx) % len(tasks)
+                focus_task = tasks[safe_index]
+                next_idx = (safe_index + 1) % len(tasks)
+                embed = format_focus_task_embed(focus_task, safe_index, len(tasks))
+                view = DailyFocusView(task_id=focus_task["id"], next_index=next_idx)
+                await interaction.response.edit_message(embed=embed, view=view)
+            return
+
+        # Focus Task Snooze: perlica:foc:snz:<task_id>
+        elif cid.startswith("perlica:foc:snz:"):
+            task_id = int(cid.split(":")[-1])
+            await db.snooze_task(task_id, days_to_add=1)
+            tasks = await db.get_highest_priority_tasks()
+            if not tasks:
+                embed = format_focus_task_embed(None, 0, 0)
+                await interaction.response.edit_message(embed=embed, view=None)
+            else:
+                embed = format_focus_task_embed(tasks[0], 0, len(tasks))
+                next_idx = 1 % len(tasks)
+                view = DailyFocusView(task_id=tasks[0]["id"], next_index=next_idx)
+                await interaction.response.edit_message(embed=embed, view=view)
+            return
+
     # Delegate to default discord.py interaction dispatching (slash commands, tree, standard views)
     await bot.process_application_commands(interaction)
+
+
+# --- SLASH COMMAND AUTOCOMPLETES (STRICT 25 CAP) ---
+
+async def task_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete for open tasks with strict Discord 25-choice API limit cap."""
+    tasks = await db.get_open_tasks()
+    if current.strip():
+        filtered = [t for t in tasks if current.lower() in t["description"].lower()]
+    else:
+        filtered = tasks
+    return [
+        app_commands.Choice(
+            name=f"#{t['id']} [{t['priority']}] {t['description'][:75]}",
+            value=str(t["id"]),
+        )
+        for t in filtered[:25]
+    ]
+
+
+async def category_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete for expense categories with strict 25 cap."""
+    categories = [
+        "Food & Dining", "Transport", "Groceries", "Utilities & Bills",
+        "Entertainment", "Shopping", "Health & Personal", "Investments & Savings", "Other"
+    ]
+    if current.strip():
+        filtered = [c for c in categories if current.lower() in c.lower()]
+    else:
+        filtered = categories
+    return [
+        app_commands.Choice(name=c, value=c)
+        for c in filtered[:25]
+    ]
 
 
 # --- DISCORD SLASH COMMANDS (APPLICATION TREE) ---
@@ -1112,6 +1378,46 @@ async def slash_dashboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=LiveDashboardView())
 
 
+@bot.tree.command(name="history", description="Browse past transactions with interactive pagination and deletion")
+async def slash_history(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    month_str = now_local.strftime("%Y-%m")
+    expenses, safe_page, total_pages, total_count = await db.get_paginated_expenses(month_str, page=1)
+    embed = format_transaction_page(expenses, safe_page, total_pages, total_count, month_str)
+    view = TransactionExplorerView(expenses, month_str, safe_page, total_pages)
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="focus", description="Open daily single-task focus mode widget")
+async def slash_focus(interaction: discord.Interaction):
+    tasks = await db.get_highest_priority_tasks()
+    if not tasks:
+        embed = format_focus_task_embed(None, 0, 0)
+        await interaction.response.send_message(embed=embed)
+    else:
+        embed = format_focus_task_embed(tasks[0], 0, len(tasks))
+        next_idx = 1 % len(tasks)
+        view = DailyFocusView(task_id=tasks[0]["id"], next_index=next_idx)
+        await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="snooze", description="Snooze a task by ID or search")
+@app_commands.autocomplete(task_id=task_autocomplete)
+@app_commands.describe(task_id="Select task to snooze", days="Days to postpone (default: 1)")
+async def slash_snooze(interaction: discord.Interaction, task_id: str, days: int = 1):
+    try:
+        tid = int(task_id)
+    except ValueError:
+        await interaction.response.send_message("Please select a valid task.", ephemeral=True)
+        return
+
+    res = await db.snooze_task(tid, days_to_add=max(1, days))
+    if res:
+        await interaction.response.send_message(f"⏰ Task `[#{tid}]` snoozed by +{days} days! (New Due Date: `{res.get('due_date')}`)")
+    else:
+        await interaction.response.send_message(f"Task #{tid} not found.", ephemeral=True)
+
+
 @bot.tree.command(name="investments", description="View dedicated Wealth & DCA Investment Portfolio")
 async def slash_investments(interaction: discord.Interaction):
     now_local = datetime.datetime.now(settings.tz)
@@ -1131,12 +1437,14 @@ async def slash_tasks(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view)
 
 
-@bot.tree.command(name="budgets", description="View current monthly budget progress bars")
+@bot.tree.command(name="budgets", description="View current monthly budget progress bars and adjust limits")
 async def slash_budgets(interaction: discord.Interaction):
     now_local = datetime.datetime.now(settings.tz)
     month_str = now_local.strftime("%Y-%m")
     status = await db.get_budget_status(month_str)
-    await interaction.response.send_message(embed=format_budget_overview(status))
+    embed = format_budget_overview(status)
+    view = BudgetDashboardView()
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @bot.tree.command(name="goals", description="View and track your dedicated savings goals with 1-tap deposit")
@@ -1148,16 +1456,25 @@ async def slash_goals(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="category", description="Inspect monthly expenses filtered by specific category")
-async def slash_category(interaction: discord.Interaction):
+@app_commands.autocomplete(category=category_autocomplete)
+@app_commands.describe(category="Select category to filter by (optional)")
+async def slash_category(interaction: discord.Interaction, category: Optional[str] = None):
     now_local = datetime.datetime.now(settings.tz)
     month_str = now_local.strftime("%Y-%m")
-    embed = discord.Embed(
-        title="📂 Interactive Category Inspector",
-        description="Select a category from the dropdown menu below to view an itemized breakdown for this month.",
-        color=discord.Color.blue(),
-    )
-    view = CategoryFilterDropdownView(current_month_str=month_str)
-    await interaction.response.send_message(embed=embed, view=view)
+    if category:
+        start_month = f"{month_str}-01"
+        exps, subtotal = await db.get_expenses_by_category(category, start_month)
+        embed = format_category_filtered_view(category, exps, subtotal, month_str)
+        view = CategoryFilterDropdownView(current_month_str=month_str)
+        await interaction.response.send_message(embed=embed, view=view)
+    else:
+        embed = discord.Embed(
+            title="📂 Interactive Category Inspector",
+            description="Select a category from the dropdown menu below to view an itemized breakdown for this month.",
+            color=discord.Color.blue(),
+        )
+        view = CategoryFilterDropdownView(current_month_str=month_str)
+        await interaction.response.send_message(embed=embed, view=view)
 
 
 @bot.tree.command(name="calendar", description="Open interactive 7-day calendar day inspector")

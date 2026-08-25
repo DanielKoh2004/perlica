@@ -1610,3 +1610,71 @@ class DatabaseManager:
                     })
 
         return unlocked
+
+    # --- PAGINATED EXPENSES & PRIORITY FOCUS ---
+
+    async def get_paginated_expenses(
+        self, month_str: str, page: int = 1, page_size: int = 10
+    ) -> Tuple[List[Dict[str, Any]], int, int, int]:
+        """
+        Fetch paginated expenses for a month with strict non-negative offset bounds.
+        Returns: (expenses_slice, safe_page, total_pages, total_count)
+        """
+        async with self.get_connection() as conn:
+            # 1. Total count
+            async with conn.execute(
+                "SELECT COUNT(*) as count FROM expenses WHERE substr(created_at, 1, 7) = ?",
+                (month_str,),
+            ) as cur:
+                row = await cur.fetchone()
+                total_count = row["count"] if row else 0
+
+            # 2. Total pages is strictly >= 1
+            total_pages = max(1, (total_count + page_size - 1) // page_size)
+
+            # 3. Safe page is strictly clamped
+            safe_page = max(1, min(page, total_pages))
+
+            # 4. Offset is strictly non-negative (>= 0)
+            offset = (safe_page - 1) * page_size
+
+            # 5. Fetch slice
+            if total_count > 0:
+                async with conn.execute(
+                    """
+                    SELECT * FROM expenses
+                    WHERE substr(created_at, 1, 7) = ?
+                    ORDER BY created_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (month_str, page_size, offset),
+                ) as cur:
+                    rows = await cur.fetchall()
+                    expenses = [dict(r) for r in rows]
+            else:
+                expenses = []
+
+        return expenses, safe_page, total_pages, total_count
+
+    async def get_highest_priority_tasks(self) -> List[Dict[str, Any]]:
+        """
+        Fetch active open tasks sorted by priority (HIGH -> MEDIUM -> LOW), due date, and ID.
+        """
+        async with self.get_connection() as conn:
+            async with conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = 'OPEN'
+                ORDER BY
+                    CASE priority
+                        WHEN 'HIGH' THEN 1
+                        WHEN 'MEDIUM' THEN 2
+                        WHEN 'LOW' THEN 3
+                        ELSE 4
+                    END ASC,
+                    CASE WHEN due_date IS NULL OR due_date = '' THEN '9999-99-99' ELSE due_date END ASC,
+                    id ASC
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]

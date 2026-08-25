@@ -1,4 +1,5 @@
 import discord
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from src.extractor import ExtractedPayload, QueryScope
 
@@ -1405,4 +1406,84 @@ def format_bill_reminder_embed(bill: Dict[str, Any], due_tag: str, is_paid: bool
     )
     if not is_paid:
         embed.set_footer(text="Click [Log & Pay Now] below to record instantly with 0 typing.")
+    return embed
+
+
+def get_time_aware_greeting(now_dt: datetime) -> str:
+    """Return an atmospheric greeting matching the user's local hour."""
+    hour = now_dt.hour
+    if 5 <= hour < 12:
+        return "🌅 Good morning Daniel"
+    elif 12 <= hour < 18:
+        return "☀️ Good afternoon Daniel"
+    elif 18 <= hour < 23:
+        return "🌆 Good evening Daniel"
+    else:
+        return "🌙 Late night mode"
+
+
+def format_transaction_page(
+    expenses: List[Dict[str, Any]],
+    page: int,
+    total_pages: int,
+    total_count: int,
+    month_str: str,
+) -> discord.Embed:
+    """Build a clean paginated transaction explorer embed with defensive non-negative bounds."""
+    embed = discord.Embed(
+        title=f"📜 Transaction Explorer — {month_str}",
+        description=f"Showing Page **{page}** of **{total_pages}** ({total_count} total records)",
+        color=discord.Color.blue(),
+    )
+    if not expenses or total_count == 0:
+        embed.description = f"No expenses recorded for **{month_str}**."
+        embed.add_field(
+            name="Empty Month",
+            value="Log an expense anytime by typing e.g. *'RM 15 lunch'*.",
+            inline=False,
+        )
+        return embed
+
+    lines = []
+    for exp in expenses:
+        note_str = f" — {exp['note']}" if exp.get("note") else ""
+        date_str = f" `[{exp['created_at'][:10]}]`" if exp.get("created_at") else ""
+        cat_str = f"`{exp['category']}`"
+        lines.append(f"• `[#{exp['id']}]` **RM {exp['amount']:.2f}** ({cat_str}){note_str}{date_str}")
+
+    embed.add_field(
+        name="Expenses on this Page",
+        value="\n".join(lines),
+        inline=False,
+    )
+    embed.set_footer(text="Use [◀️ Prev] [Next ▶️] or select an expense below to delete.")
+    return embed
+
+
+def format_focus_task_embed(
+    task: Optional[Dict[str, Any]], current_idx: int, total_open: int
+) -> discord.Embed:
+    """Build a high-impact single-task daily focus card."""
+    if not task or total_open == 0:
+        embed = discord.Embed(
+            title="🎉 All Focus Tasks Clear!",
+            description="You have 0 pending open tasks. Excellent productivity momentum!",
+            color=discord.Color.green(),
+        )
+        return embed
+
+    prio_emoji = "🔴" if task.get("priority") == "HIGH" else ("🟡" if task.get("priority") == "MEDIUM" else "🟢")
+    due_str = f"📅 Due: `{task['due_date']}`" if task.get("due_date") else "📅 No deadline"
+    phase_str = f"\n🧩 **Phase**: `{task['phase_name']}`" if task.get("phase_name") else ""
+
+    embed = discord.Embed(
+        title=f"🎯 Daily Focus — Task {current_idx + 1} of {total_open}",
+        description=(
+            f"### `[#{task['id']}]` {task['description']}\n"
+            f"• **Priority**: {prio_emoji} `{task.get('priority', 'MEDIUM')}`\n"
+            f"• **Deadline**: {due_str}{phase_str}"
+        ),
+        color=discord.Color.brand_green() if task.get("priority") != "HIGH" else discord.Color.gold(),
+    )
+    embed.set_footer(text="Tap [Complete] when done, or [Skip] to rotate focus.")
     return embed
