@@ -50,6 +50,7 @@ from src.formatters import (
     format_focus_task_embed,
     get_time_aware_greeting,
     get_upcoming_malaysian_holidays,
+    format_upcoming_holidays_embed,
     format_fuel_receipt_embed,
     generate_html_report,
     render_progress_bar,
@@ -1395,6 +1396,16 @@ async def slash_history(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view)
 
 
+@bot.tree.command(name="holidays", description="View upcoming Selangor and Federal public holidays & long weekends")
+@app_commands.describe(days="Days ahead to inspect (default: 60)")
+async def slash_holidays(interaction: discord.Interaction, days: int = 60):
+    now_local = datetime.datetime.now(settings.tz)
+    today_str = now_local.strftime("%Y-%m-%d")
+    holidays_list = get_upcoming_malaysian_holidays(now_local.date(), days_ahead=max(1, days), subdiv="SGR")
+    embed = format_upcoming_holidays_embed(holidays_list, today_str)
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="focus", description="Open daily single-task focus mode widget")
 async def slash_focus(interaction: discord.Interaction):
     tasks = await db.get_highest_priority_tasks()
@@ -2122,6 +2133,14 @@ async def on_message(message: discord.Message):
             await message.reply(f"⚠️ Sync failed: {e}")
         return
 
+    # Direct Holidays Command Check (e.g. "holidays", "upcoming holidays", "cuti")
+    if content.lower().strip() in ("holidays", "upcoming holidays", "holiday", "cuti", "!holidays", "!cuti", "long weekend", "public holidays"):
+        now_local = datetime.datetime.now(settings.tz)
+        today_str = now_local.strftime("%Y-%m-%d")
+        holidays_list = get_upcoming_malaysian_holidays(now_local.date(), days_ahead=60, subdiv="SGR")
+        await message.reply(embed=format_upcoming_holidays_embed(holidays_list, today_str))
+        return
+
     # Visual feedback: typing indicator in DM
     async with message.channel.typing():
         now_local = datetime.datetime.now(settings.tz)
@@ -2491,6 +2510,11 @@ async def on_message(message: discord.Message):
                 dca_progress = await db.get_dca_progress(month_str)
                 embed = format_investments_overview(invest_summary, dca_progress, month_str)
                 await message.reply(embed=embed, view=QuickActionView())
+                return
+
+            if q.query_target == "HOLIDAYS":
+                holidays_list = get_upcoming_malaysian_holidays(now_local.date(), days_ahead=60, subdiv="SGR")
+                await message.reply(embed=format_upcoming_holidays_embed(holidays_list, now_local.strftime("%Y-%m-%d")), view=QuickActionView())
                 return
 
             if q.timeframe == "TODAY":

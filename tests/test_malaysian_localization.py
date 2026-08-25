@@ -163,3 +163,16 @@ def test_manglish_system_prompt_rules():
     assert "bil tnb" in prompt
     assert "semalam" in prompt
     assert "kelmarin" in prompt
+
+
+def test_upcoming_holidays_embed_formatter():
+    """Verify format_upcoming_holidays_embed outputs beautiful cards."""
+    from src.formatters import format_upcoming_holidays_embed
+    holidays_data = [
+        {"name": "Hari Kebangsaan", "date": "2026-08-31", "days_away": 6, "is_long_weekend": True, "day_name": "Monday"},
+        {"name": "Hari Malaysia", "date": "2026-09-16", "days_away": 22, "is_long_weekend": False, "day_name": "Wednesday"},
+    ]
+    embed = format_upcoming_holidays_embed(holidays_data, "2026-08-25")
+    assert "Malaysian Public Holidays" in embed.title
+    assert "Hari Kebangsaan" in embed.fields[0].value
+    assert "3-Day Long Weekend!" in embed.fields[0].value

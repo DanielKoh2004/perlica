@@ -1593,3 +1593,37 @@ def format_fuel_receipt_embed(
         )
 
     return embed
+
+
+def format_upcoming_holidays_embed(
+    holidays_list: List[Dict[str, Any]], base_date_str: str
+) -> discord.Embed:
+    """Build an on-demand upcoming public holidays & long weekend guide."""
+    embed = discord.Embed(
+        title="🇲🇾 Malaysian Public Holidays & Long Weekends",
+        description=f"Showing upcoming Federal & Selangor state holidays from **{base_date_str}**:",
+        color=discord.Color.gold(),
+    )
+    if not holidays_list:
+        embed.description = f"No public holidays in the next 60 days from **{base_date_str}**."
+        return embed
+
+    lines = []
+    for h in holidays_list:
+        lw_tag = " — **🏝️ 3-Day Long Weekend!**" if h["is_long_weekend"] else ""
+        if h["days_away"] == 0:
+            day_tag = "**Today!**"
+        elif h["days_away"] == 1:
+            day_tag = "**Tomorrow!**"
+        else:
+            day_tag = f"in **{h['days_away']} days**"
+
+        lines.append(f"• **{h['name']}**\n  📅 `{h['date']}` ({h['day_name']}) — {day_tag}{lw_tag}")
+
+    embed.add_field(
+        name="Upcoming Holidays Calendar",
+        value="\n\n".join(lines[:8]),
+        inline=False,
+    )
+    embed.set_footer(text="Powered by official Malaysian lunar, lunisolar, and state calendar engine.")
+    return embed

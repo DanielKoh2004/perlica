@@ -127,7 +127,7 @@ class TaskItem(BaseModel):
 
 
 class QueryScope(BaseModel):
-    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "BUDGETS", "BILLS", "GOALS", "INVESTMENTS", "GENERAL"] = Field(
+    query_target: Literal["EXPENSES", "TASKS", "SUMMARY", "ADVICE", "BUDGETS", "BILLS", "GOALS", "INVESTMENTS", "HOLIDAYS", "GENERAL"] = Field(
         ...,
         description="Target dataset or intent to view/analyze.",
     )
@@ -417,6 +417,7 @@ EXTRACTION & ZERO-ASSUMPTION RULES:
    - "summarize today", "recap my day", "summary of this week": query with query_target='SUMMARY' and timeframe.
    - "goals", "my savings goals", "show goals": query with query_target='GOALS'.
    - "investments", "my investments", "wealth", "portfolio", "dca status": query with query_target='INVESTMENTS'.
+   - "holidays", "upcoming holidays", "public holidays", "when is the next holiday", "cuti", "long weekend": query with query_target='HOLIDAYS'.
 
 11. TASK COMPLETIONS:
    - Match completed tasks against ACTIVE OPEN TASKS by exact integer ID.
