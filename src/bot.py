@@ -1427,6 +1427,14 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
         process_count = len(files_to_process)
         indexed_count = 0
 
+        # Mark source as actively indexing with total eligible count for live /sources feedback
+        await db.update_source_status(
+            source_id,
+            eligible_count=total_eligible_count,
+            indexed_count=0,
+            status="INDEXING",
+        )
+
         for idx, entry in enumerate(files_to_process):
             path = entry["path"]
             blob_sha = entry["sha"]

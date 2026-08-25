@@ -1710,7 +1710,12 @@ def format_sources_dashboard_embed(sources_summary: List[Dict[str, Any]]) -> dis
         s_type = s.get("source_type", "UNKNOWN")
         badge = "🐙" if s_type == "GITHUB" else ("📄" if s_type == "PDF" else ("🌐" if s_type == "WEB" else "📝"))
         status = s.get("status", "COMPLETE")
-        status_tag = "🟢 Complete" if status == "COMPLETE" else ("🟡 Partial" if status == "PARTIAL" else "🔴 Failed")
+        status_tag = (
+            "🟢 Complete" if status == "COMPLETE"
+            else ("🔄 Indexing..." if status == "INDEXING"
+            else ("🟡 Partial" if status == "PARTIAL"
+            else "🔴 Failed"))
+        )
         
         eligible = s.get("eligible_count", 0)
         indexed = s.get("indexed_count", 0)
