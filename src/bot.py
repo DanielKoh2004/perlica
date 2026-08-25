@@ -2430,82 +2430,6 @@ async def slash_goals(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=view)
 
 
-@bot.tree.command(name="goal", description="Manage goals: create with dynamic AI wizard, list, view, or deposit")
-@app_commands.describe(
-    action="Action to perform",
-    goal_id="Optional goal ID for view/deposit/delete",
-    amount="Optional deposit amount for action='deposit'",
-)
-@app_commands.choices(action=[
-    app_commands.Choice(name="✨ Create with AI Wizard", value="create"),
-    app_commands.Choice(name="📂 List / Explore All Goals", value="list"),
-    app_commands.Choice(name="💰 Deposit Savings", value="deposit"),
-    app_commands.Choice(name="🗑️ Delete Goal", value="delete"),
-])
-async def slash_goal(
-    interaction: discord.Interaction,
-    action: app_commands.Choice[str],
-    goal_id: Optional[int] = None,
-    amount: Optional[float] = None,
-):
-    if action.value == "create":
-        initial_state = {
-            "user_id": interaction.user.id,
-            "step": 0,
-            "goal_name": "",
-            "goal_category": "Custom",
-            "target_amount": 0.0,
-            "conversation_history": [],
-            "milestones": [],
-            "is_ready_for_review": False,
-        }
-        await db.save_wizard_session(interaction.user.id, initial_state)
-        await interaction.response.send_message(
-            "🎯 **Dynamic AI Goal Planning Session Started!**\n"
-            "What is your new goal? (e.g. *'I want to plan a Japan trip in 2027'*, *'Buy a MacBook Pro'*, *'Build a 6-month emergency fund'*).\n\n"
-            "💬 **Type your reply in this chat to begin!** _(Type `cancel` anytime to abort)_",
-            ephemeral=True,
-        )
-    elif action.value == "list":
-        goals = await db.get_active_goals_with_milestones()
-        if goals:
-            embed = format_rich_goal_detail_embed(goals[0])
-            view = GoalExplorerView(goals=goals, current_goal_id=goals[0]["id"], db_manager=db)
-        else:
-            embed = format_goals_overview([])
-            view = GoalExplorerView(goals=[], current_goal_id=None, db_manager=db)
-        await interaction.response.send_message(embed=embed, view=view)
-    elif action.value == "deposit":
-        if goal_id and amount and amount > 0:
-            res = await db.deposit_to_goal(goal_id, amount)
-            if res:
-                embed = format_rich_goal_detail_embed(res)
-                await interaction.response.send_message(f"💰 Deposited **+RM {amount:.2f}** into Goal #{goal_id}!", embed=embed)
-            else:
-                await interaction.response.send_message(f"Goal #{goal_id} not found.", ephemeral=True)
-        elif goal_id:
-            g = await db.get_goal_by_id(goal_id)
-            if g:
-                await interaction.response.send_modal(GoalDepositModal(goal_id=goal_id, goal_name=g["name"]))
-            else:
-                await interaction.response.send_message(f"Goal #{goal_id} not found.", ephemeral=True)
-        else:
-            goals = await db.get_active_goals_with_milestones()
-            if goals:
-                await interaction.response.send_modal(GoalDepositModal(goal_id=goals[0]["id"], goal_name=goals[0]["name"]))
-            else:
-                await interaction.response.send_message("No active goals found. Use `/goal action:create` to start one!", ephemeral=True)
-    elif action.value == "delete":
-        if not goal_id:
-            await interaction.response.send_message("Please provide `goal_id` to delete.", ephemeral=True)
-            return
-        deleted = await db.delete_goal(goal_id)
-        if deleted:
-            await interaction.response.send_message(f"🗑️ Goal `#{goal_id}` ({deleted['name']}) has been deleted.")
-        else:
-            await interaction.response.send_message(f"Goal `#{goal_id}` not found.", ephemeral=True)
-
-
 @bot.tree.command(name="category", description="Inspect monthly expenses filtered by specific category")
 @app_commands.autocomplete(category=category_autocomplete)
 @app_commands.describe(category="Select category to filter by (optional)")
@@ -3699,6 +3623,24 @@ async def on_message(message: discord.Message):
             await message.reply(embed=embed, view=ConfirmActionView(on_confirm=do_reopen))
             return
 
+        # 5b. Goal Creation Intent -> Seamless Dynamic AI Wizard Launch!
+        if payload.goal_create_name and not payload.goal_create_target:
+            async with message.channel.typing():
+                from src.goal_wizard import process_wizard_turn
+                state, reply_text = await process_wizard_turn(
+                    user_id=message.author.id,
+                    user_message=content,
+                    db_manager=db,
+                    groq_api_key=settings.GROQ_API_KEY,
+                )
+                if state.is_ready_for_review:
+                    embed = format_goal_wizard_preview_embed(state.to_dict())
+                    view = GoalWizardReviewView(user_id=message.author.id, state_dict=state.to_dict(), db_manager=db)
+                    await message.reply(embed=embed, view=view)
+                else:
+                    await message.reply(reply_text)
+            return
+
         # 6. Pure Conversational / Casual Chat Handling
         has_actions = bool(
             payload.expenses
@@ -3706,8 +3648,9 @@ async def on_message(message: discord.Message):
             or payload.completed_task_ids
             or payload.add_bill_name
             or payload.set_budget_category
-            or payload.goal_create_name
+            or (payload.goal_create_name and payload.goal_create_target)
             or payload.goal_deposit_id
+            or payload.goal_deposit_query
             or payload.ambiguous_task_note
             or payload.query
         )
@@ -3748,9 +3691,14 @@ async def on_message(message: discord.Message):
                 return
 
             if q.query_target == "GOALS":
-                goals = await db.get_active_goals()
-                embed = format_goals_overview(goals)
-                await message.reply(embed=embed, view=QuickActionView())
+                goals = await db.get_active_goals_with_milestones()
+                if goals:
+                    embed = format_rich_goal_detail_embed(goals[0])
+                    view = GoalExplorerView(goals=goals, current_goal_id=goals[0]["id"], db_manager=db)
+                else:
+                    embed = format_goals_overview([])
+                    view = GoalExplorerView(goals=[], current_goal_id=None, db_manager=db)
+                await message.reply(embed=embed, view=view)
                 return
 
             if q.query_target == "INVESTMENTS":
