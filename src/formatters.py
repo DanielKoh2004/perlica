@@ -1329,65 +1329,61 @@ def format_query_results(
 def format_help_guide() -> discord.Embed:
     """Build a comprehensive guide embed showing how to interact with the bot."""
     embed = discord.Embed(
-        title="📖 Perlica Personal Agent — Quick Start Guide",
-        description="Just send natural sentences, voice notes, receipt photos, or use `/` slash commands!",
+        title="📖 Perlica Personal Agent — Command & Feature Guide",
+        description="Send natural messages, voice notes, receipt photos, or use native `/` slash commands!",
         color=discord.Color.teal(),
     )
 
     embed.add_field(
-        name="💎 Wealth & DCA Commitments",
+        name="⚡ Daily Productivity & Slash Commands",
+        value=(
+            "• `/dashboard` or `dashboard` *(Live command center)*\n"
+            "• `/focus` *(Daily single-task focus widget with skip & snooze)*\n"
+            "• `/history` *(Paginated transaction explorer with 1-tap delete dropdown)*\n"
+            "• `/tasks` *(Batch task completion dropdown)*\n"
+            "• `/budgets` *(Adjust limits via interactive popup modal)*\n"
+            "• `/goals` *(Savings goals overview & 1-tap deposit)*\n"
+            "• `/investments` *(Dedicated Wealth & DCA portfolio)*\n"
+            "• `/holidays` or `holidays` *(Selangor & Federal holiday countdowns)*\n"
+            "• `/category` *(Itemized category inspector with autocomplete)*\n"
+            "• `/report` *(Download standalone Executive HTML report)*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🇲🇾 Natural Malaysian & Manglish Ingestion",
+        value=(
+            "• `tapau nasi kandar rm 14.50 semalam` *(Auto-dates to yesterday)*\n"
+            "• `isi minyak petronas rm 50` *(Tracks 200L RON95 subsidy @ RM 1.99/L)*\n"
+            "• `bayar bil tnb rm 120 kelmarin` *(Utilities & Bills)*\n"
+            "• 🎙️ *Send voice notes while driving!*\n"
+            "• 📸 *Send receipt photos for automatic Vision OCR!*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="💎 Wealth & DCA Commitments (Budget-Immune)",
         value=(
             "• `bought $100 s&p500` / `dca 400 into voo`\n"
-            "• `/investments` or `investments` *(Wealth command center)*\n"
-            "• `recurring buy RM 400 s&p500 on 27th`"
+            "• `recurring buy RM 400 s&p500 on 27th`\n"
+            "• *Investments never deduct from your living expense allowance!*"
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="🎯 Savings Goals (Never deducted by expenses)",
+        name="🛡️ Zero-Assumption Guardrails",
         value=(
-            "• `Create goal Japan Trip target RM 6000`\n"
-            "• `Saved RM 500 for Japan Trip`\n"
-            "• `/goals` or `goals` *(View goal progress meters)*"
+            "• **3-Button Action Gate**: Review preview before saving (`[Confirm]` / `[Edit]` / `[Reject]`)\n"
+            "• **Double-Tap Protection**: 5-minute duplicate collision warning (`[Log Anyway]` / `[Discard]`)\n"
+            "• **Quick Undo**: 10-second rollback toast on every logged action"
         ),
         inline=False,
     )
 
-    embed.add_field(
-        name="⚡ Interactive Controls & Modals",
-        value=(
-            "• 📌 `dashboard` or `/dashboard` *(Pinned live command center)*\n"
-            "• ✏️ Click **[Edit]** on any preview for a **Popup Edit Modal**\n"
-            "• ⚡ `presets` or `/presets` *(1-tap common expenses)*\n"
-            "• 📅 `calendar` *(7-Day Day Inspector)*\n"
-            "• 🔍 `find <keyword>` *(Search expenses and tasks)*\n"
-            "• 📊 `/report` *(Download HTML Financial Report)*"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="💸 Logging Expenses & Receipts",
-        value=(
-            "• `RM 15.50 chicken rice for lunch`\n"
-            "• `Reload TNG RM 50` / `99 Speedmart RM 28`\n"
-            "• 🎙️ *Send a voice note while driving!*\n"
-            "• 📸 *Send a photo of a receipt!*"
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="📊 Budget Limits & Safe Allowance",
-        value=(
-            "• `Set monthly food budget to RM 800`\n"
-            "• `Check my budget status`\n"
-            "• ☀️ *Morning Briefing calculates your Safe-to-Spend runway!*"
-        ),
-        inline=False,
-    )
-
+    embed.set_footer(text="Tip: Type / for native slash command autocomplete anytime.")
     return embed
 
 

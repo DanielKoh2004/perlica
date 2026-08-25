@@ -1429,6 +1429,12 @@ async def slash_focus(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed, view=view)
 
 
+@bot.tree.command(name="help", description="Open comprehensive Perlica guide and feature list")
+async def slash_help(interaction: discord.Interaction):
+    embed = format_help_guide()
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="snooze", description="Snooze a task by ID or search")
 @app_commands.autocomplete(task_id=task_autocomplete)
 @app_commands.describe(task_id="Select task to snooze", days="Days to postpone (default: 1)")
@@ -2159,6 +2165,11 @@ async def on_message(message: discord.Message):
         today_str = now_local.strftime("%Y-%m-%d")
         holidays_list = get_upcoming_malaysian_holidays(now_local.date(), days_ahead=60, subdiv="SGR")
         await message.reply(embed=format_upcoming_holidays_embed(holidays_list, today_str))
+        return
+
+    # Direct Help Command Check (e.g. "help", "!help", "guide")
+    if content.lower().strip() in ("help", "!help", "guide", "commands", "/help"):
+        await message.reply(embed=format_help_guide())
         return
 
     # Visual feedback: typing indicator in DM
