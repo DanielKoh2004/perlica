@@ -59,6 +59,9 @@ from src.formatters import (
     format_copilot_answer_embeds,
     format_sources_dashboard_embed,
     format_ingest_hub_embed,
+    format_goal_wizard_preview_embed,
+    format_rich_goal_detail_embed,
+    format_goal_disambiguation_embed,
     CopilotAnswerView,
     SourcesDashboardView,
 )
