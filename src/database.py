@@ -173,6 +173,18 @@ class DatabaseManager:
                 );
                 """
             )
+            # 6. User Milestones Ledger (Atomic milestone tracking & anti-spam deduplication)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_milestones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    milestone_key TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    awarded_at TEXT NOT NULL
+                );
+                """
+            )
 
             # Auto-migration for tasks table columns
             async with conn.execute("PRAGMA table_info(tasks);") as cursor:
@@ -205,6 +217,9 @@ class DatabaseManager:
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_expenses_asset ON expenses(asset_name);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_milestone_key ON user_milestones(milestone_key);"
             )
             await conn.commit()
 
@@ -1432,3 +1447,166 @@ class DatabaseManager:
             "tasks": tasks,
             "total_spent_on_matches": round(total_spent, 2),
         }
+
+    async def get_expenses_by_category(
+        self,
+        category: str,
+        start_date_str: Optional[str] = None,
+        end_date_str: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], float]:
+        """
+        Fetch itemized expenses under a specific category within a timeframe, plus subtotal.
+        """
+        async with self.get_connection() as conn:
+            if start_date_str and end_date_str:
+                query = """
+                    SELECT * FROM expenses
+                    WHERE category = ? AND substr(created_at, 1, 10) BETWEEN ? AND ?
+                    ORDER BY created_at DESC
+                """
+                params = (category, start_date_str, end_date_str)
+            elif start_date_str:
+                query = """
+                    SELECT * FROM expenses
+                    WHERE category = ? AND substr(created_at, 1, 10) >= ?
+                    ORDER BY created_at DESC
+                """
+                params = (category, start_date_str)
+            else:
+                query = """
+                    SELECT * FROM expenses
+                    WHERE category = ?
+                    ORDER BY created_at DESC
+                """
+                params = (category,)
+
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                expenses = [dict(r) for r in rows]
+
+        subtotal = round(sum(e["amount"] for e in expenses), 2)
+        return expenses, subtotal
+
+    # --- MILESTONES & GAMIFICATION LEDGER ---
+
+    async def try_award_milestone(
+        self, milestone_key: str, title: str, description: str, awarded_at: str
+    ) -> bool:
+        """
+        Atomically attempt to award a milestone.
+        Returns True ONLY if this milestone was never awarded before.
+        Returns False if already awarded (guarantees anti-spam deduplication).
+        """
+        async with self.get_connection() as conn:
+            try:
+                cursor = await conn.execute(
+                    """
+                    INSERT INTO user_milestones (milestone_key, title, description, awarded_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (milestone_key, title, description, awarded_at),
+                )
+                await conn.commit()
+                return cursor.rowcount > 0
+            except aiosqlite.IntegrityError:
+                return False
+
+    async def check_new_milestones(self, today_str: str, month_str: str) -> List[Dict[str, Any]]:
+        """
+        Evaluate streaks, DCA commitments, and savings goals against the milestone ledger.
+        Returns ONLY newly unlocked milestone dicts.
+        """
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        unlocked: List[Dict[str, Any]] = []
+
+        # 1. Logging Streaks
+        streak_info = await self.get_productivity_streak(today_str)
+        s_days = streak_info.get("streak_days", 0)
+
+        if s_days >= 7:
+            key = "streak_logging_7d_first"
+            if await self.try_award_milestone(
+                milestone_key=key,
+                title="7-Day Discipline Master",
+                description="Logged expenses/tasks consistently for 7 consecutive days!",
+                awarded_at=now_str,
+            ):
+                unlocked.append({
+                    "key": key,
+                    "title": "7-Day Discipline Master",
+                    "badge": "🔥 7-Day Streak",
+                    "description": "You've logged your financial and focus activity for 7 consecutive days! Compounding momentum is building.",
+                })
+
+        if s_days >= 30:
+            key = "streak_logging_30d_first"
+            if await self.try_award_milestone(
+                milestone_key=key,
+                title="30-Day Financial Titan",
+                description="Logged consistently for 30 consecutive days!",
+                awarded_at=now_str,
+            ):
+                unlocked.append({
+                    "key": key,
+                    "title": "30-Day Financial Titan",
+                    "badge": "🌟 30-Day Streak",
+                    "description": "One full month of unbroken financial clarity. You are in the top tier of disciplined builders.",
+                })
+
+        # 2. Savings Goals Milestones (50% and 100%)
+        async with self.get_connection() as conn:
+            async with conn.execute("SELECT * FROM goals") as cur:
+                goals = [dict(r) for r in await cur.fetchall()]
+        for g in goals:
+            target = g["target_amount"]
+            current = g["current_amount"]
+            if target > 0:
+                pct = (current / target) * 100.0
+                if pct >= 50.0:
+                    key = f"goal_50pct_{g['id']}"
+                    if await self.try_award_milestone(
+                        milestone_key=key,
+                        title=f"Halfway to {g['name']}",
+                        description=f"Saved over 50% (RM {current:.2f} of RM {target:.2f}) toward {g['name']}!",
+                        awarded_at=now_str,
+                    ):
+                        unlocked.append({
+                            "key": key,
+                            "title": f"Halfway to {g['name']}",
+                            "badge": "⚡ 50% Goal Reached",
+                            "description": f"You've crossed 50% of your target for **{g['name']}** (RM {current:.2f} / RM {target:.2f})!",
+                        })
+                if pct >= 100.0:
+                    key = f"goal_100pct_{g['id']}"
+                    if await self.try_award_milestone(
+                        milestone_key=key,
+                        title=f"{g['name']} Achieved!",
+                        description=f"Fully funded {g['name']} with RM {current:.2f}!",
+                        awarded_at=now_str,
+                    ):
+                        unlocked.append({
+                            "key": key,
+                            "title": f"{g['name']} Fully Achieved!",
+                            "badge": "🏆 100% Fully Funded",
+                            "description": f"Congratulations! You have reached your target for **{g['name']}** (RM {current:.2f})!",
+                        })
+
+        # 3. DCA Consistency Milestones (3-Month Streak per Recurring Bill)
+        dca_progress = await self.get_dca_progress(month_str)
+        for d in dca_progress:
+            if d.get("streak_months", 0) >= 3:
+                key = f"dca_streak_3mo_{d['bill_id']}_{month_str}"
+                if await self.try_award_milestone(
+                    milestone_key=key,
+                    title=f"DCA Compounder: {d['name']}",
+                    description=f"Met your monthly investment target for {d['name']} for 3 consecutive months!",
+                    awarded_at=now_str,
+                ):
+                    unlocked.append({
+                        "key": key,
+                        "title": f"3-Month DCA Compounder: {d['name']}",
+                        "badge": "🔥 3-Month DCA Streak",
+                        "description": f"You've fulfilled your monthly DCA commitment for **{d['name']}** 3 months in a row. Dollar-cost averaging mastery!",
+                    })
+
+        return unlocked

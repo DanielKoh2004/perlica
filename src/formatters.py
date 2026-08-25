@@ -1277,6 +1277,16 @@ def format_help_guide() -> discord.Embed:
     )
 
     embed.add_field(
+        name="💎 Wealth & DCA Commitments",
+        value=(
+            "• `bought $100 s&p500` / `dca 400 into voo`\n"
+            "• `/investments` or `investments` *(Wealth command center)*\n"
+            "• `recurring buy RM 400 s&p500 on 27th`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="🎯 Savings Goals (Never deducted by expenses)",
         value=(
             "• `Create goal Japan Trip target RM 6000`\n"
@@ -1304,7 +1314,6 @@ def format_help_guide() -> discord.Embed:
         value=(
             "• `RM 15.50 chicken rice for lunch`\n"
             "• `Reload TNG RM 50` / `99 Speedmart RM 28`\n"
-            "• `recurring buy $100 s&p500 on 27th`\n"
             "• 🎙️ *Send a voice note while driving!*\n"
             "• 📸 *Send a photo of a receipt!*"
         ),
@@ -1321,14 +1330,79 @@ def format_help_guide() -> discord.Embed:
         inline=False,
     )
 
+    return embed
+
+
+def format_milestone_celebration(milestone: Dict[str, Any]) -> discord.Embed:
+    """Build a rich celebratory embed when a financial or productivity milestone is unlocked."""
+    embed = discord.Embed(
+        title=f"🎖️ {milestone['title']}",
+        description=f"### {milestone['badge']}\n{milestone['description']}",
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text="Consistency is the engine of wealth. Keep going!")
+    return embed
+
+
+def format_category_filtered_view(
+    category: str,
+    expenses: List[Dict[str, Any]],
+    total_spent: float,
+    month_str: str,
+) -> discord.Embed:
+    """Build an itemized category inspector embed for interactive dropdown filtering."""
+    embed = discord.Embed(
+        title=f"📂 Category Inspector: {category}",
+        description=f"Spending breakdown for **{month_str}** | Total: **RM {total_spent:.2f}** ({len(expenses)} transactions)",
+        color=discord.Color.blue(),
+    )
+    if not expenses:
+        embed.add_field(
+            name="No Transactions",
+            value=f"No expenses logged under `{category}` for this period.",
+            inline=False,
+        )
+        return embed
+
+    lines = []
+    for exp in expenses[:15]:
+        note = f" — {exp['note']}" if exp.get("note") else ""
+        date_str = f" `[{exp['created_at'][:10]}]`" if exp.get("created_at") else ""
+        lines.append(f"• **RM {exp['amount']:.2f}**{note}{date_str}")
+
     embed.add_field(
-        name="📝 Multi-Phase Tasks & Dropdowns",
-        value=(
-            "• `Create task 'App Launch' with 3 phases: 1. Wireframes, 2. Design, 3. Testing`\n"
-            "• `What are my open tasks?` *(Native 1-tap select dropdown)*\n"
-            "• `Done task #1`"
-        ),
+        name="Recent Transactions",
+        value="\n".join(lines) + ("\n...and more" if len(expenses) > 15 else ""),
         inline=False,
     )
+    return embed
 
+
+def format_voice_transcription_preview(transcription_text: str) -> discord.Embed:
+    """Build an immediate visual card showing transcribed voice audio."""
+    embed = discord.Embed(
+        title="🎙️ Voice Note Transcribed",
+        description=f"> *\"{transcription_text}\"*",
+        color=discord.Color.teal(),
+    )
+    embed.set_footer(text="Parsing actions with zero-assumption engine...")
+    return embed
+
+
+def format_bill_reminder_embed(bill: Dict[str, Any], due_tag: str, is_paid: bool = False) -> discord.Embed:
+    """Build an actionable reminder card for recurring bills and DCA investments."""
+    status_icon = "✅" if is_paid else "🔔"
+    cat_tag = "💎 Wealth & DCA" if bill.get("category") == "Investments & Savings" else f"`{bill['category']}`"
+    
+    embed = discord.Embed(
+        title=f"{status_icon} Recurring Commitment Reminder: {bill['name']}",
+        description=(
+            f"• **Amount**: **RM {bill['amount']:.2f}**\n"
+            f"• **Category**: {cat_tag}\n"
+            f"• **Status**: `{due_tag}`"
+        ),
+        color=discord.Color.green() if is_paid else discord.Color.gold(),
+    )
+    if not is_paid:
+        embed.set_footer(text="Click [Log & Pay Now] below to record instantly with 0 typing.")
     return embed

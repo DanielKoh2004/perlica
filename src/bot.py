@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from src.config import settings
-from src.database import DatabaseManager
+from src.database import DatabaseManager, normalize_canonical_asset
 from src.extractor import (
     ExtractionEngine,
     ExtractedPayload,
@@ -37,7 +37,12 @@ from src.formatters import (
     format_search_results,
     format_calendar_day_view,
     format_investments_overview,
+    format_milestone_celebration,
+    format_category_filtered_view,
+    format_voice_transcription_preview,
+    format_bill_reminder_embed,
     generate_html_report,
+    render_progress_bar,
 )
 
 logging.basicConfig(
@@ -315,6 +320,254 @@ class BillEditModal(discord.ui.Modal, title="✏️ Edit Recurring Bill"):
             content="✏️ *Preview updated from your popup edits:*",
             embed=new_embed,
             view=self.parent_view,
+        )
+
+
+class GoalDepositModal(discord.ui.Modal):
+    """Popup form modal to deposit savings directly into an active goal."""
+
+    def __init__(self, goal_id: int, goal_name: str = "Savings Goal"):
+        super().__init__(title=f"➕ Deposit to {goal_name[:20]}")
+        self.goal_id = goal_id
+        self.amount_input = discord.ui.TextInput(
+            label="Deposit Amount (RM)",
+            placeholder="e.g. 500.00",
+            required=True,
+            max_length=20,
+        )
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        amt = clean_float_input(self.amount_input.value, default=0.0)
+        if amt <= 0:
+            await interaction.response.send_message("Please enter a valid deposit amount greater than 0.", ephemeral=True)
+            return
+
+        res = await db.deposit_to_goal(self.goal_id, amt)
+        if res:
+            bar = render_progress_bar(res["current_amount"], res["target_amount"])
+            embed = discord.Embed(
+                title=f"🎯 Goal Deposit Recorded: {res['name']}",
+                description=(
+                    f"• **Deposited**: **+RM {amt:.2f}**\n"
+                    f"• **Total Saved**: **RM {res['current_amount']:.2f}** / RM {res['target_amount']:.2f}\n"
+                    f"• **Progress**:\n{bar}\n"
+                    f"• **Remaining**: **RM {res['remaining']:.2f}**"
+                ),
+                color=discord.Color.green(),
+            )
+            now_local = datetime.datetime.now(settings.tz)
+            today_str = now_local.strftime("%Y-%m-%d")
+            month_str = now_local.strftime("%Y-%m")
+            milestones = await db.check_new_milestones(today_str, month_str)
+
+            await interaction.response.send_message(embed=embed)
+            for m in milestones:
+                await interaction.followup.send(embed=format_milestone_celebration(m))
+        else:
+            await interaction.response.send_message(f"Goal #{self.goal_id} not found.", ephemeral=True)
+
+
+class GoalCreateModal(discord.ui.Modal, title="🏆 Create Savings Goal"):
+    """Popup form modal to create a new dedicated savings goal."""
+
+    name_input = discord.ui.TextInput(
+        label="Goal Name",
+        placeholder="e.g. Japan Trip, Emergency Fund, MacBook Pro",
+        required=True,
+        max_length=100,
+    )
+    target_input = discord.ui.TextInput(
+        label="Target Amount (RM)",
+        placeholder="e.g. 6000.00",
+        required=True,
+        max_length=20,
+    )
+    date_input = discord.ui.TextInput(
+        label="Target Completion Date (Optional YYYY-MM-DD)",
+        placeholder="e.g. 2026-12-31",
+        required=False,
+        max_length=20,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.name_input.value.strip()
+        target = clean_float_input(self.target_input.value, default=0.0)
+        target_date = self.date_input.value.strip() or None
+        if target <= 0 or not name:
+            await interaction.response.send_message("Please provide a valid goal name and target amount > 0.", ephemeral=True)
+            return
+
+        now_str = datetime.datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        gid = await db.create_goal(name=name, target_amount=target, target_date=target_date, created_at=now_str)
+        embed = discord.Embed(
+            title=f"🏆 Savings Goal Created: {name}",
+            description=(
+                f"• **Goal ID**: `#{gid}`\n"
+                f"• **Target**: **RM {target:.2f}**\n"
+                f"• **Target Date**: `{target_date or 'No deadline'}`\n"
+                f"• **Asset Accumulation**: Protected from living expense runway!"
+            ),
+            color=discord.Color.gold(),
+        )
+        await interaction.response.send_message(embed=embed)
+
+
+class BillCustomAmountModal(discord.ui.Modal, title="✏️ Custom Payment Amount"):
+    """Popup form modal to pay a recurring bill or DCA with a custom amount."""
+
+    def __init__(self, bill_id: int):
+        super().__init__()
+        self.bill_id = bill_id
+        self.amount_input = discord.ui.TextInput(
+            label="Payment / Investment Amount (RM)",
+            placeholder="e.g. 500.00",
+            required=True,
+            max_length=20,
+        )
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        amt = clean_float_input(self.amount_input.value, default=0.0)
+        if amt <= 0:
+            await interaction.response.send_message("Please enter an amount > 0.", ephemeral=True)
+            return
+
+        bill = await db.get_recurring_bill_by_id(self.bill_id)
+        if not bill:
+            await interaction.response.send_message(f"Bill #{self.bill_id} was not found.", ephemeral=True)
+            return
+
+        now_local = datetime.datetime.now(settings.tz)
+        now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+        c_name, _ = normalize_canonical_asset(bill["name"])
+
+        await db.insert_expense(
+            amount=amt,
+            category=bill["category"],
+            note=f"Paid {bill['name']}",
+            created_at=now_str,
+            asset_name=c_name if bill["category"] == "Investments & Savings" else None,
+            recurring_bill_id=self.bill_id,
+        )
+        embed = format_bill_reminder_embed(bill, due_tag="PAID", is_paid=True)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        milestones = await db.check_new_milestones(now_local.strftime("%Y-%m-%d"), now_local.strftime("%Y-%m"))
+        for m in milestones:
+            await interaction.followup.send(embed=format_milestone_celebration(m))
+
+
+class GoalsDashboardView(discord.ui.View):
+    """Interactive view for /goals with 1-tap deposit dropdown and creation modal."""
+
+    def __init__(self, goals: List[Dict[str, Any]]):
+        super().__init__(timeout=None)
+        self.goals = goals
+
+        if goals:
+            options = [
+                discord.SelectOption(
+                    label=f"{g['name'][:25]} (RM {g['current_amount']:.0f}/{g['target_amount']:.0f})",
+                    value=str(g["id"]),
+                    description=f"{g['percentage']}% funded | RM {g['remaining']:.2f} left",
+                    emoji="🎯",
+                )
+                for g in goals[:25]
+            ]
+            select = discord.ui.Select(
+                placeholder="➕ Select a goal to deposit savings into...",
+                options=options,
+                custom_id="perlica:goals:select_dep",
+                min_values=1,
+                max_values=1,
+            )
+
+            async def on_select_goal(interaction: discord.Interaction):
+                gid = int(select.values[0])
+                target_g = next((g for g in goals if g["id"] == gid), None)
+                gname = target_g["name"] if target_g else "Savings Goal"
+                await interaction.response.send_modal(GoalDepositModal(goal_id=gid, goal_name=gname))
+
+            select.callback = on_select_goal
+            self.add_item(select)
+
+    @discord.ui.button(label="Create New Goal", style=discord.ButtonStyle.success, emoji="🏆", custom_id="perlica:btn:create_goal")
+    async def create_goal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(GoalCreateModal())
+
+
+class CategoryFilterDropdownView(discord.ui.View):
+    """Interactive 1-tap category inspector dropdown view."""
+
+    def __init__(self, current_month_str: str):
+        super().__init__(timeout=180.0)
+        self.month_str = current_month_str
+        categories = [
+            ("Food & Dining", "🍔"),
+            ("Transport", "🚗"),
+            ("Groceries", "🛒"),
+            ("Utilities & Bills", "⚡"),
+            ("Entertainment", "🎮"),
+            ("Shopping", "🛍️"),
+            ("Health & Personal", "💊"),
+            ("Investments & Savings", "💎"),
+            ("Other", "📦"),
+        ]
+        options = [
+            discord.SelectOption(label=cat, emoji=emoji, value=cat)
+            for cat, emoji in categories
+        ]
+        select = discord.ui.Select(
+            placeholder="📂 Filter by Category...",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+        async def on_category_select(interaction: discord.Interaction):
+            cat = select.values[0]
+            start_month = f"{self.month_str}-01"
+            exps, subtotal = await db.get_expenses_by_category(cat, start_month)
+            embed = format_category_filtered_view(cat, exps, subtotal, self.month_str)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        select.callback = on_category_select
+        self.add_item(select)
+
+
+class BillActionView(discord.ui.View):
+    """Stateless action view for 1-tap bill and DCA logging with custom_id encoded parameters."""
+
+    def __init__(self, bill_id: int, amount: float, category: str):
+        super().__init__(timeout=None)
+        is_invest = (category == "Investments & Savings")
+        label = f"Log RM {amount:.2f} DCA" if is_invest else f"Pay RM {amount:.2f}"
+        emoji = "💎" if is_invest else "✅"
+
+        self.add_item(
+            discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.success,
+                emoji=emoji,
+                custom_id=f"perlica:bill:pay:{bill_id}",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Custom Amount",
+                style=discord.ButtonStyle.primary,
+                emoji="✏️",
+                custom_id=f"perlica:bill:custom:{bill_id}",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Snooze 24h",
+                style=discord.ButtonStyle.secondary,
+                emoji="⏰",
+                custom_id=f"perlica:bill:snooze:{bill_id}",
+            )
         )
 
 
@@ -752,6 +1005,73 @@ class QuickLogPresetView(discord.ui.View):
         await self.on_trigger_preset(payload, interaction)
 
 
+# --- GLOBAL STATELESS COMPONENT INTERACTION ROUTER ---
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    """
+    Global stateless component interaction router.
+    Parses dynamic parameters encoded directly into custom_id (e.g. perlica:bill:pay:42).
+    Guarantees buttons survive infinite bot restarts without transient memory errors!
+    """
+    if interaction.type == discord.InteractionType.component:
+        cid = interaction.data.get("custom_id", "")
+
+        # 1-Tap Bill / DCA Payment
+        if cid.startswith("perlica:bill:pay:"):
+            bill_id = int(cid.split(":")[-1])
+            bill = await db.get_recurring_bill_by_id(bill_id)
+            if bill:
+                now_local = datetime.datetime.now(settings.tz)
+                now_str = now_local.strftime("%Y-%m-%d %H:%M:%S")
+                c_name, _ = normalize_canonical_asset(bill["name"])
+                is_invest = (bill["category"] == "Investments & Savings")
+                
+                await db.insert_expense(
+                    amount=bill["amount"],
+                    category=bill["category"],
+                    note=f"Paid {bill['name']}",
+                    created_at=now_str,
+                    asset_name=c_name if is_invest else None,
+                    recurring_bill_id=bill_id,
+                )
+                embed = format_bill_reminder_embed(bill, due_tag="PAID", is_paid=True)
+                await interaction.response.edit_message(embed=embed, view=None)
+
+                milestones = await db.check_new_milestones(now_local.strftime("%Y-%m-%d"), now_local.strftime("%Y-%m"))
+                for m in milestones:
+                    try:
+                        await interaction.followup.send(embed=format_milestone_celebration(m))
+                    except Exception:
+                        pass
+            else:
+                await interaction.response.send_message(f"Bill #{bill_id} not found.", ephemeral=True)
+            return
+
+        # 1-Tap Bill Snooze
+        elif cid.startswith("perlica:bill:snooze:"):
+            await interaction.response.edit_message(
+                content="⏰ **Reminder snoozed for 24 hours.**",
+                embed=None,
+                view=None,
+            )
+            return
+
+        # 1-Tap Custom Amount Bill Modal
+        elif cid.startswith("perlica:bill:custom:"):
+            bill_id = int(cid.split(":")[-1])
+            await interaction.response.send_modal(BillCustomAmountModal(bill_id=bill_id))
+            return
+
+        # 1-Tap Goal Creation Modal
+        elif cid == "perlica:btn:create_goal":
+            await interaction.response.send_modal(GoalCreateModal())
+            return
+
+    # Delegate to default discord.py interaction dispatching (slash commands, tree, standard views)
+    await bot.process_application_commands(interaction)
+
+
 # --- DISCORD SLASH COMMANDS (APPLICATION TREE) ---
 
 @bot.tree.command(name="dashboard", description="Open your live interactive command center dashboard")
@@ -819,11 +1139,25 @@ async def slash_budgets(interaction: discord.Interaction):
     await interaction.response.send_message(embed=format_budget_overview(status))
 
 
-@bot.tree.command(name="goals", description="View and track your dedicated savings goals")
+@bot.tree.command(name="goals", description="View and track your dedicated savings goals with 1-tap deposit")
 async def slash_goals(interaction: discord.Interaction):
     goals = await db.get_active_goals()
     embed = format_goals_overview(goals)
-    await interaction.response.send_message(embed=embed)
+    view = GoalsDashboardView(goals)
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="category", description="Inspect monthly expenses filtered by specific category")
+async def slash_category(interaction: discord.Interaction):
+    now_local = datetime.datetime.now(settings.tz)
+    month_str = now_local.strftime("%Y-%m")
+    embed = discord.Embed(
+        title="📂 Interactive Category Inspector",
+        description="Select a category from the dropdown menu below to view an itemized breakdown for this month.",
+        color=discord.Color.blue(),
+    )
+    view = CategoryFilterDropdownView(current_month_str=month_str)
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @bot.tree.command(name="calendar", description="Open interactive 7-day calendar day inspector")
@@ -992,6 +1326,12 @@ async def morning_briefing_loop():
     try:
         await target_user.send(embed=embed, view=QuickActionView())
         logger.info(f"Dispatched morning briefing DM for {today_str}.")
+
+        # Send 1-tap actionable cards for bills/DCA due today
+        for b in due_bills:
+            due_embed = format_bill_reminder_embed(b, due_tag="DUE TODAY 🚨", is_paid=False)
+            bill_view = BillActionView(bill_id=b["id"], amount=b["amount"], category=b["category"])
+            await target_user.send(embed=due_embed, view=bill_view)
     except Exception as e:
         logger.error(f"Failed to send morning briefing DM: {e}")
 
@@ -1250,6 +1590,14 @@ async def handle_action_preview_flow(target: Any, payload: ExtractedPayload, fro
         except Exception:
             pass
 
+        # Check and celebrate newly unlocked milestones (atomic anti-spam ledger)
+        new_milestones = await db.check_new_milestones(now_local.strftime("%Y-%m-%d"), month_str)
+        for m in new_milestones:
+            try:
+                await interaction.followup.send(embed=format_milestone_celebration(m))
+            except Exception as e:
+                logger.debug(f"Milestone celebratory followup note: {e}")
+
     preview_embed = format_action_preview(
         payload=payload,
         expenses=expenses_preview,
@@ -1287,7 +1635,7 @@ async def on_message(message: discord.Message):
                     audio_bytes = await att.read()
                     transcribed = await extractor.transcribe_audio((att.filename, audio_bytes))
                     if transcribed:
-                        await message.reply(f"🎙️ *Voice Note Transcribed:* \"{transcribed}\"")
+                        await message.reply(embed=format_voice_transcription_preview(transcribed))
                         content = f"{content} {transcribed}".strip()
                     else:
                         await message.reply("⚠️ Could not transcribe the audio file.")
