@@ -255,3 +255,81 @@ async def test_atomicity_failure_preserves_previous_state(temp_db):
     res_after = await temp_db.fts_search_knowledge("Original production code", source_id=source_id)
     assert len(res_after) == 1
     assert res_after[0]["content"] == "Original production code v1"
+
+
+@pytest.mark.asyncio
+async def test_cap_aware_manifest_tracking_preserves_excluded_files(temp_db):
+    """
+    Verify that files beyond the ingestion cap marked as EXCLUDED_CAP
+    are tracked in the manifest and NOT mistakenly purged as deleted files.
+    """
+    source_id = await temp_db.get_or_create_source("Large Repo", "GITHUB", "github:DanielKoh2004/large-repo")
+
+    # Sync 1: 4 eligible files, index 2, cap 2
+    # File 1 & 2 -> INDEXED
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/file1.py",
+        blob_sha="sha1",
+        sync_id=1,
+        chunks=[{"section_title": "file1", "content": "print('file1')"}],
+        embeddings=[],
+    )
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/file2.py",
+        blob_sha="sha2",
+        sync_id=1,
+        chunks=[{"section_title": "file2", "content": "print('file2')"}],
+        embeddings=[],
+    )
+    # File 3 & 4 -> EXCLUDED_CAP
+    await temp_db.mark_source_files_excluded_cap(
+        source_id=source_id,
+        capped_files=[("src/file3.py", "sha3"), ("src/file4.py", "sha4")],
+        sync_id=1,
+    )
+
+    # Purge unseen files for Sync 1 -> 0 files purged
+    purged1 = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=1)
+    assert purged1 == 0
+
+    manifest1 = await temp_db.get_source_files_manifest(source_id)
+    assert len(manifest1) == 4
+    assert manifest1["src/file1.py"]["status"] == "INDEXED"
+    assert manifest1["src/file3.py"]["status"] == "EXCLUDED_CAP"
+
+    # Sync 2: File 4 is deleted remotely (only files 1, 2, 3 in remote tree)
+    # File 1 & 2 seen again
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/file1.py",
+        blob_sha="sha1",
+        sync_id=2,
+        chunks=[{"section_title": "file1", "content": "print('file1')"}],
+        embeddings=[],
+    )
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/file2.py",
+        blob_sha="sha2",
+        sync_id=2,
+        chunks=[{"section_title": "file2", "content": "print('file2')"}],
+        embeddings=[],
+    )
+    # File 3 seen in manifest as EXCLUDED_CAP
+    await temp_db.mark_source_files_excluded_cap(
+        source_id=source_id,
+        capped_files=[("src/file3.py", "sha3")],
+        sync_id=2,
+    )
+
+    # Purge unseen files for Sync 2 -> exactly 1 file (src/file4.py) purged!
+    purged2 = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=2)
+    assert purged2 == 1
+
+    manifest2 = await temp_db.get_source_files_manifest(source_id)
+    assert len(manifest2) == 3
+    assert "src/file4.py" not in manifest2
+    assert "src/file3.py" in manifest2
+    assert manifest2["src/file3.py"]["status"] == "EXCLUDED_CAP"

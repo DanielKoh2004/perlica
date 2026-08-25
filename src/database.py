@@ -2105,6 +2105,43 @@ class DatabaseManager:
             await conn.commit()
             return file_id
 
+    async def mark_source_files_excluded_cap(
+        self,
+        source_id: int,
+        capped_files: List[Tuple[str, str]],
+        sync_id: int,
+    ) -> None:
+        """
+        Record remote eligible files that were seen in the remote manifest but not indexed due to 250 cap.
+        Updates last_seen_sync_id = sync_id and status = 'EXCLUDED_CAP', ensuring they are not mistakenly purged.
+        """
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            for path, blob_sha in capped_files:
+                cursor = await conn.execute(
+                    """
+                    INSERT INTO source_files (source_id, path, blob_sha, last_seen_sync_id, status, updated_at)
+                    VALUES (?, ?, ?, ?, 'EXCLUDED_CAP', ?)
+                    ON CONFLICT(source_id, path) DO UPDATE SET
+                        blob_sha = excluded.blob_sha,
+                        last_seen_sync_id = excluded.last_seen_sync_id,
+                        status = excluded.status,
+                        updated_at = excluded.updated_at
+                    RETURNING id;
+                    """,
+                    (source_id, path, blob_sha, sync_id, now_str),
+                )
+                row = await cursor.fetchone()
+                file_id = row["id"] if row else None
+                if not file_id:
+                    async with conn.execute("SELECT id FROM source_files WHERE source_id = ? AND path = ?", (source_id, path)) as c2:
+                        r2 = await c2.fetchone()
+                        file_id = r2["id"] if r2 else None
+
+                if file_id:
+                    await conn.execute("DELETE FROM knowledge_chunks WHERE source_file_id = ?", (file_id,))
+            await conn.commit()
+
     async def purge_unseen_source_files(self, source_id: int, current_sync_id: int) -> int:
         """
         Purge source files (and cascading chunks/FTS) that were not seen in the current sync run.

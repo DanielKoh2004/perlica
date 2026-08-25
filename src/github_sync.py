@@ -227,12 +227,12 @@ async def fetch_github_repo_tree(
     repo_name: str,
     branch: str = "main",
     token: Optional[str] = None,
-) -> Tuple[str, List[Dict[str, Any]]]:
+) -> Tuple[str, List[Dict[str, Any]], bool]:
     """
     Fetch the exact commit SHA and the recursive Git tree for a repository.
     1. Resolves branch/ref to the exact immutable commit SHA via the Commits API.
     2. Fetches the recursive tree using the commit SHA.
-    Returns: (commit_sha, tree_entries)
+    Returns: (commit_sha, tree_entries, is_truncated)
     """
     auth_token = token or settings.GITHUB_TOKEN
     headers = {"User-Agent": "Perlica-Knowledge-Copilot", "Accept": "application/vnd.github+json"}
@@ -261,8 +261,9 @@ async def fetch_github_repo_tree(
         tree_resp.raise_for_status()
         tree_data = tree_resp.json()
         tree = tree_data.get("tree", [])
+        is_truncated = bool(tree_data.get("truncated", False))
 
-        return commit_sha, tree
+        return commit_sha, tree, is_truncated
 
 
 async def fetch_github_blob_content(

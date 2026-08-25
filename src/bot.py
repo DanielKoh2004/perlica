@@ -1396,7 +1396,14 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
     """Background worker to synchronize a GitHub repository with manifest diffing."""
     try:
         await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Fetching tree for {repo_name}...")
-        commit_sha, tree_entries = await fetch_github_repo_tree(repo_name, branch=branch)
+        commit_sha, tree_entries, is_truncated = await fetch_github_repo_tree(repo_name, branch=branch)
+
+        # Critical Invariant: Never execute deletion reconciliation from an incomplete/truncated remote manifest
+        if is_truncated:
+            raise RuntimeError(
+                f"GitHub returned a truncated tree for '{repo_name}'. "
+                "Aborting sync without purging to prevent accidental data loss."
+            )
 
         source_ref = f"github:{repo_name}"
         source_id = await db.get_or_create_source(name=repo_name, source_type="GITHUB", source_ref=source_ref)
@@ -1413,9 +1420,10 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
             if eligible:
                 eligible_files.append(entry)
 
-        # Truthful coverage accounting
+        # Truthful coverage accounting & Cap-Aware Manifest tracking
         total_eligible_count = len(eligible_files)
         files_to_process = eligible_files[:MAX_REPO_FILES]
+        capped_files = eligible_files[MAX_REPO_FILES:]
         process_count = len(files_to_process)
         indexed_count = 0
 
@@ -1463,7 +1471,12 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
             )
             indexed_count += 1
 
-        # Purge deleted files
+        # Track eligible files beyond 250 cap so they are not mistakenly purged as deleted
+        if capped_files:
+            capped_tuples = [(f["path"], f["sha"]) for f in capped_files]
+            await db.mark_source_files_excluded_cap(source_id, capped_tuples, sync_id=job_id)
+
+        # Purge genuinely deleted files (those not present in the remote tree manifest at all)
         await db.purge_unseen_source_files(source_id, current_sync_id=job_id)
 
         # Truthful coverage status: only COMPLETE if ALL eligible files in the repo were indexed and within cap

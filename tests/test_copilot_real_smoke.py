@@ -20,7 +20,11 @@ async def real_codebase_db(tmp_path):
     await db.init_db()
 
     repo_name = "DanielKoh2004/perlica"
-    commit_sha = "31436a88b59adfc83e390c5fa63198089c20f124"
+    try:
+        import subprocess
+        commit_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        commit_sha = "HEAD"
     source_ref = f"github:{repo_name}"
 
     source_id = await db.get_or_create_source(
