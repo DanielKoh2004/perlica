@@ -240,6 +240,7 @@ class DatabaseManager:
             )
 
             # 8. Source Files Manifest Table
+            # Status enum: 'INDEXED', 'EXCLUDED_SIZE', 'EXCLUDED_BINARY', 'EXCLUDED_SECRET', 'EXCLUDED_CAP', 'FAILED_FETCH', 'FAILED_PARSE', 'FAILED_EMBED'
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_files (
@@ -2253,9 +2254,9 @@ class DatabaseManager:
                     FROM knowledge_chunks_fts fts
                     JOIN knowledge_chunks kc ON fts.rowid = kc.id
                     JOIN sources s ON kc.source_id = s.id
-                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE knowledge_chunks_fts MATCH ? AND kc.source_id = ?
-                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
+                    AND sf.status = 'INDEXED'
                     ORDER BY bm25_rank ASC
                     LIMIT ?
                 """
@@ -2266,9 +2267,9 @@ class DatabaseManager:
                     FROM knowledge_chunks_fts fts
                     JOIN knowledge_chunks kc ON fts.rowid = kc.id
                     JOIN sources s ON kc.source_id = s.id
-                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE knowledge_chunks_fts MATCH ?
-                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
+                    AND sf.status = 'INDEXED'
                     ORDER BY bm25_rank ASC
                     LIMIT ?
                 """
@@ -2315,9 +2316,9 @@ class DatabaseManager:
                     FROM knowledge_chunks kc
                     JOIN chunk_embeddings ce ON kc.id = ce.chunk_id
                     JOIN sources s ON kc.source_id = s.id
-                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE ce.model_id = ? AND kc.source_id = ?
-                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
+                    AND sf.status = 'INDEXED'
                 """
                 params = (model_id, source_id)
             else:
@@ -2326,9 +2327,9 @@ class DatabaseManager:
                     FROM knowledge_chunks kc
                     JOIN chunk_embeddings ce ON kc.id = ce.chunk_id
                     JOIN sources s ON kc.source_id = s.id
-                    LEFT JOIN source_files sf ON kc.source_file_id = sf.id
+                    JOIN source_files sf ON kc.source_file_id = sf.id
                     WHERE ce.model_id = ?
-                    AND (sf.status IS NULL OR sf.status = 'INDEXED')
+                    AND sf.status = 'INDEXED'
                 """
                 params = (model_id,)
 
@@ -2473,18 +2474,36 @@ class DatabaseManager:
             return cur.rowcount > 0
 
     async def store_quick_note(self, content: str, section_title: str = "Quick Note") -> int:
-        """Store a quick note directly into SQLite NOTES source."""
+        """Store a quick note directly into SQLite NOTES source and link to an INDEXED source_files row."""
         source_id = await self.get_or_create_source("Quick Notes", "NOTES", "local:notes")
         content_hash = re.sub(r'\s+', ' ', content).strip()
         now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
 
         async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO source_files (source_id, path, blob_sha, last_seen_sync_id, status, updated_at)
+                VALUES (?, 'quick_notes.md', 'local_note', 1, 'INDEXED', ?)
+                ON CONFLICT(source_id, path) DO UPDATE SET
+                    status = 'INDEXED',
+                    updated_at = excluded.updated_at
+                RETURNING id;
+                """,
+                (source_id, now_str),
+            )
+            row = await cursor.fetchone()
+            file_id = row["id"] if row else None
+            if not file_id:
+                async with conn.execute("SELECT id FROM source_files WHERE source_id = ? AND path = 'quick_notes.md'", (source_id,)) as c2:
+                    r2 = await c2.fetchone()
+                    file_id = r2["id"] if r2 else None
+
             cur = await conn.execute(
                 """
-                INSERT INTO knowledge_chunks (source_id, section_title, content, content_hash, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO knowledge_chunks (source_id, source_file_id, section_title, content, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (source_id, section_title, content, content_hash, now_str),
+                (source_id, file_id, section_title, content, content_hash, now_str),
             )
             chunk_id = cur.lastrowid
             await conn.commit()

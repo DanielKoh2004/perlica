@@ -517,3 +517,61 @@ async def test_secret_exclusion_migration_purges_chunks_and_preserves_manifest(t
 
     dense_secret = await temp_db.get_all_chunks_with_embeddings(source_id=source_id)
     assert len(dense_secret) == 0
+
+
+@pytest.mark.asyncio
+async def test_embedding_failure_does_not_purge_or_retrieve_file(temp_db):
+    """
+    Verify that an ONNX embedding runtime error marks the file FAILED_EMBED,
+    preserves manifest tracking without deletion, and excludes old chunks from retrieval.
+    """
+    source_id = await temp_db.get_or_create_source("Embed Guard Repo", "GITHUB", "github:DanielKoh2004/embed-guard")
+
+    # Sync 1: vector.py is indexed and retrievable
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/vector.py",
+        blob_sha="sha_vec_v1",
+        sync_id=1,
+        chunks=[{"section_title": "vector", "content": "def compute_cosine_distance(): pass"}],
+        embeddings=[("bge-small-en-v1.5", b"\x00" * 1536)],
+    )
+    res1 = await temp_db.fts_search_knowledge("compute_cosine_distance", source_id=source_id)
+    assert len(res1) == 1
+
+    # Sync 2: embedding calculation fails -> marks FAILED_EMBED
+    await temp_db.mark_source_file_failed(
+        source_id=source_id,
+        file_path="src/vector.py",
+        blob_sha="sha_vec_v2",
+        sync_id=2,
+        status="FAILED_EMBED",
+    )
+
+    # Purge unseen files for Sync 2 -> 0 files purged
+    purged = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=2)
+    assert purged == 0
+
+    manifest = await temp_db.get_source_files_manifest(source_id)
+    assert "src/vector.py" in manifest
+    assert manifest["src/vector.py"]["status"] == "FAILED_EMBED"
+    assert manifest["src/vector.py"]["last_seen_sync_id"] == 2
+
+    # Old chunks are not searchable
+    res_failed = await temp_db.fts_search_knowledge("compute_cosine_distance", source_id=source_id)
+    assert len(res_failed) == 0
+
+    dense_failed = await temp_db.get_all_chunks_with_embeddings(source_id=source_id)
+    assert len(dense_failed) == 0
+
+    # Sync 3: successful re-embed restores retrieval
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/vector.py",
+        blob_sha="sha_vec_v3",
+        sync_id=3,
+        chunks=[{"section_title": "vector", "content": "def compute_euclidean_distance(): pass"}],
+        embeddings=[("bge-small-en-v1.5", b"\x00" * 1536)],
+    )
+    res_restored = await temp_db.fts_search_knowledge("compute_euclidean_distance", source_id=source_id)
+    assert len(res_restored) == 1
