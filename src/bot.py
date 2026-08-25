@@ -1443,7 +1443,15 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
             # Fetch content
             await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Indexing ({idx+1}/{process_count}): {path}")
             raw_code = await fetch_github_blob_content(repo_name, path, commit_sha)
-            if raw_code is None or scan_content_for_secrets(raw_code):
+            if raw_code is None:
+                # Invariant: Transient fetch failures update manifest without deleting existing valid chunks
+                await db.mark_source_file_failed(source_id, path, blob_sha, sync_id=job_id, status="FAILED_FETCH")
+                continue
+
+            # Secret inspection
+            if scan_content_for_secrets(raw_code):
+                # Invariant: Secret files update manifest as EXCLUDED_SECRET and purge chunks
+                await db.mark_source_file_secret_excluded(source_id, path, blob_sha, sync_id=job_id)
                 continue
 
             # Chunk
@@ -1453,6 +1461,7 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
                 chunks = chunk_generic_code(raw_code, repo_name, path, commit_sha)
 
             if not chunks:
+                await db.mark_source_file_failed(source_id, path, blob_sha, sync_id=job_id, status="FAILED_PARSE")
                 continue
 
             # Embed

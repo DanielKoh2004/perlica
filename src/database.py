@@ -2142,6 +2142,73 @@ class DatabaseManager:
                     await conn.execute("DELETE FROM knowledge_chunks WHERE source_file_id = ?", (file_id,))
             await conn.commit()
 
+    async def mark_source_file_failed(
+        self,
+        source_id: int,
+        file_path: str,
+        blob_sha: Optional[str],
+        sync_id: int,
+        status: str = "FAILED_FETCH",
+    ) -> None:
+        """
+        Record a remote file that failed to fetch, parse, or embed during sync.
+        Updates last_seen_sync_id = sync_id and status = status.
+        Crucial Invariant: Preserves existing knowledge_chunks so transient network failures do not cause data loss.
+        """
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO source_files (source_id, path, blob_sha, last_seen_sync_id, status, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, path) DO UPDATE SET
+                    blob_sha = COALESCE(excluded.blob_sha, source_files.blob_sha),
+                    last_seen_sync_id = excluded.last_seen_sync_id,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                """,
+                (source_id, file_path, blob_sha, sync_id, status, now_str),
+            )
+            await conn.commit()
+
+    async def mark_source_file_secret_excluded(
+        self,
+        source_id: int,
+        file_path: str,
+        blob_sha: Optional[str],
+        sync_id: int,
+    ) -> None:
+        """
+        Record a remote file that was excluded because it contains secrets or private keys.
+        Updates last_seen_sync_id = sync_id and status = 'EXCLUDED_SECRET'.
+        Purges any previously stored chunks for this file to prevent secret leakage.
+        """
+        now_str = datetime.now(settings.tz).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO source_files (source_id, path, blob_sha, last_seen_sync_id, status, updated_at)
+                VALUES (?, ?, ?, ?, 'EXCLUDED_SECRET', ?)
+                ON CONFLICT(source_id, path) DO UPDATE SET
+                    blob_sha = excluded.blob_sha,
+                    last_seen_sync_id = excluded.last_seen_sync_id,
+                    status = excluded.status,
+                    updated_at = excluded.updated_at
+                RETURNING id;
+                """,
+                (source_id, file_path, blob_sha, sync_id, now_str),
+            )
+            row = await cursor.fetchone()
+            file_id = row["id"] if row else None
+            if not file_id:
+                async with conn.execute("SELECT id FROM source_files WHERE source_id = ? AND path = ?", (source_id, file_path)) as c2:
+                    r2 = await c2.fetchone()
+                    file_id = r2["id"] if r2 else None
+
+            if file_id:
+                await conn.execute("DELETE FROM knowledge_chunks WHERE source_file_id = ?", (file_id,))
+            await conn.commit()
+
     async def purge_unseen_source_files(self, source_id: int, current_sync_id: int) -> int:
         """
         Purge source files (and cascading chunks/FTS) that were not seen in the current sync run.

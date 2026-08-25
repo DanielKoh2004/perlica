@@ -333,3 +333,80 @@ async def test_cap_aware_manifest_tracking_preserves_excluded_files(temp_db):
     assert "src/file4.py" not in manifest2
     assert "src/file3.py" in manifest2
     assert manifest2["src/file3.py"]["status"] == "EXCLUDED_CAP"
+
+
+@pytest.mark.asyncio
+async def test_failed_processing_does_not_purge_remote_file(temp_db):
+    """
+    Verify that transient network or parsing failures during a sync do NOT
+    cause the file or its previous valid chunks to be purged from SQLite.
+    """
+    source_id = await temp_db.get_or_create_source("Resilient Repo", "GITHUB", "github:DanielKoh2004/resilient-repo")
+
+    # Sync 1: file1.py is successfully indexed
+    await temp_db.commit_file_reconciliation(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_auth_v1",
+        sync_id=1,
+        chunks=[{"section_title": "auth", "content": "def authenticate_user(): pass"}],
+        embeddings=[],
+    )
+    res1 = await temp_db.fts_search_knowledge("authenticate_user", source_id=source_id)
+    assert len(res1) == 1
+
+    # Sync 2: src/auth.py still exists in remote tree, but GitHub fetch fails transiently
+    await temp_db.mark_source_file_failed(
+        source_id=source_id,
+        file_path="src/auth.py",
+        blob_sha="sha_auth_v1",
+        sync_id=2,
+        status="FAILED_FETCH",
+    )
+
+    # Purge unseen files for Sync 2 -> 0 files purged because auth.py was seen
+    purged = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=2)
+    assert purged == 0
+
+    # Invariant check: source_files entry is FAILED_FETCH and old chunks remain searchable
+    manifest = await temp_db.get_source_files_manifest(source_id)
+    assert "src/auth.py" in manifest
+    assert manifest["src/auth.py"]["status"] == "FAILED_FETCH"
+    assert manifest["src/auth.py"]["last_seen_sync_id"] == 2
+
+    # Previous valid chunks are preserved!
+    res2 = await temp_db.fts_search_knowledge("authenticate_user", source_id=source_id)
+    assert len(res2) == 1
+    assert "authenticate_user" in res2[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_secret_exclusion_does_not_purge_remote_file(temp_db):
+    """
+    Verify that files excluded due to secret detection are tracked in the manifest
+    without being treated as absent/deleted, and their chunks are purged.
+    """
+    source_id = await temp_db.get_or_create_source("Secret Repo", "GITHUB", "github:DanielKoh2004/secret-repo")
+
+    # Sync 1: File contains AWS secret and is excluded
+    await temp_db.mark_source_file_secret_excluded(
+        source_id=source_id,
+        file_path="config/aws_keys.py",
+        blob_sha="sha_secret_1",
+        sync_id=1,
+    )
+
+    # Purge unseen files for Sync 1 -> 0 files purged
+    purged = await temp_db.purge_unseen_source_files(source_id=source_id, current_sync_id=1)
+    assert purged == 0
+
+    manifest = await temp_db.get_source_files_manifest(source_id)
+    assert "config/aws_keys.py" in manifest
+    assert manifest["config/aws_keys.py"]["status"] == "EXCLUDED_SECRET"
+    assert manifest["config/aws_keys.py"]["last_seen_sync_id"] == 1
+
+    # Chunks are completely empty
+    async with temp_db.get_connection() as conn:
+        async with conn.execute("SELECT COUNT(*) as count FROM knowledge_chunks WHERE source_id = ?", (source_id,)) as cur:
+            row = await cur.fetchone()
+            assert row["count"] == 0
