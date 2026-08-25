@@ -1711,8 +1711,12 @@ async def slash_repo(
     )
 
 
-@bot.tree.command(name="ingest", description="Ingest a webpage URL or local PDF into the knowledge base")
-@app_commands.describe(source_type="Type of source to ingest", target="Webpage URL or path to PDF")
+@bot.tree.command(name="ingest", description="Ingest a webpage URL, local PDF, or uploaded document into the knowledge base")
+@app_commands.describe(
+    source_type="Type of source to ingest",
+    target="Webpage URL or path to PDF (leave empty if uploading attachment)",
+    file="Optional PDF file to upload directly",
+)
 @app_commands.choices(source_type=[
     app_commands.Choice(name="🌐 Web Page URL", value="web"),
     app_commands.Choice(name="📄 PDF Document", value="pdf"),
@@ -1720,15 +1724,18 @@ async def slash_repo(
 async def slash_ingest(
     interaction: discord.Interaction,
     source_type: app_commands.Choice[str],
-    target: str,
+    target: Optional[str] = None,
+    file: Optional[discord.Attachment] = None,
 ):
     if not is_user_authorized_for_copilot(interaction.user.id):
         await interaction.response.send_message("⛔ You are not authorized to ingest sources.", ephemeral=True)
         return
 
-    target_clean = target.strip()
-
     if source_type.value == "web":
+        if not target:
+            await interaction.response.send_message("❌ Please provide a webpage URL in the `target` field.", ephemeral=True)
+            return
+        target_clean = target.strip()
         job_id = await db.create_ingestion_job(source_type="WEB", target_ref=target_clean)
         asyncio.create_task(run_web_ingest_job(job_id, target_clean))
         await interaction.response.send_message(
@@ -1737,6 +1744,28 @@ async def slash_ingest(
             ephemeral=True
         )
     else:  # PDF
+        if file:
+            # User uploaded a file directly via slash command
+            pdf_bytes = await file.read()
+            os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
+            safe_filename = os.path.basename(file.filename)
+            dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
+            with open(dest_path, "wb") as f:
+                f.write(pdf_bytes)
+            job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
+            asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
+            await interaction.response.send_message(
+                f"📄 **PDF Ingestion Queued (Job #{job_id})**\n"
+                f"Extracting pages from uploaded `{safe_filename}` in the background.",
+                ephemeral=True
+            )
+            return
+
+        if not target:
+            await interaction.response.send_message("❌ Please provide a PDF file path in `target` or attach a file in `file`.", ephemeral=True)
+            return
+
+        target_clean = target.strip()
         if not os.path.exists(target_clean):
             # Check relative to KNOWLEDGE_DIR
             alt_path = os.path.join(settings.KNOWLEDGE_DIR, target_clean)
@@ -2488,6 +2517,25 @@ async def on_message(message: discord.Message):
                         await message.reply("⚠️ Could not transcribe the audio file.")
             elif any(lower_name.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
                 image_attachment = att
+            elif lower_name.endswith(".pdf"):
+                if not is_user_authorized_for_copilot(message.author.id):
+                    await message.reply("⛔ You are not authorized to upload knowledge documents.")
+                    return
+                async with message.channel.typing():
+                    pdf_bytes = await att.read()
+                    os.makedirs(settings.KNOWLEDGE_DIR, exist_ok=True)
+                    safe_filename = os.path.basename(att.filename)
+                    dest_path = os.path.join(settings.KNOWLEDGE_DIR, safe_filename)
+                    with open(dest_path, "wb") as f:
+                        f.write(pdf_bytes)
+                    job_id = await db.create_ingestion_job(source_type="PDF", target_ref=dest_path)
+                    asyncio.create_task(run_pdf_ingest_job(job_id, dest_path))
+                    await message.reply(
+                        f"📄 **PDF Ingestion Queued (Job #{job_id})**\n"
+                        f"Extracting pages from `{safe_filename}` in the background.\n"
+                        f"Use `/sources` to view status or `? <query>` to search!"
+                    )
+                return
 
     if not content and not image_attachment:
         return
