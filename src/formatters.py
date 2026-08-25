@@ -2063,3 +2063,17 @@ class CopilotAnswerView(discord.ui.View):
         )
         await interaction.response.send_modal(modal)
 
+
+class SourcesDashboardView(discord.ui.View):
+    """Interactive view for the Knowledge Base /sources dashboard with 1-tap live refresh."""
+
+    def __init__(self, db_manager: Any):
+        super().__init__(timeout=300)
+        self.db = db_manager
+
+    @discord.ui.button(label="🔄 Refresh Dashboard", style=discord.ButtonStyle.secondary, custom_id="sources:refresh")
+    async def on_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        sources_summary = await self.db.get_knowledge_sources_summary()
+        embed = format_sources_dashboard_embed(sources_summary)
+        await interaction.response.edit_message(embed=embed, view=self)
+

@@ -58,6 +58,7 @@ from src.formatters import (
     format_copilot_answer_embeds,
     format_sources_dashboard_embed,
     CopilotAnswerView,
+    SourcesDashboardView,
 )
 from src.security import is_user_authorized_for_copilot, scan_content_for_secrets
 from src.github_sync import (
@@ -1768,7 +1769,8 @@ async def slash_sources(interaction: discord.Interaction):
 
     sources_summary = await db.get_knowledge_sources_summary()
     embed = format_sources_dashboard_embed(sources_summary)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    view = SourcesDashboardView(db_manager=db)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="dashboard", description="Open your live interactive command center dashboard")
@@ -2615,7 +2617,8 @@ async def on_message(message: discord.Message):
             return
         sources_summary = await db.get_knowledge_sources_summary()
         embed = format_sources_dashboard_embed(sources_summary)
-        await message.reply(embed=embed)
+        view = SourcesDashboardView(db_manager=db)
+        await message.reply(embed=embed, view=view)
         return
 
     # Visual feedback: typing indicator in DM
