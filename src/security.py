@@ -146,9 +146,10 @@ async def fetch_safe_url(url: str, max_redirects: int = 3, timeout: float = 10.0
 def is_user_authorized_for_copilot(user_id: int) -> bool:
     """
     Check if a Discord user is authorized to use the Knowledge Copilot.
+    Fails closed: requires at least one configured authorized ID in ALLOWED_DISCORD_USERS or ALLOWED_USER_ID.
     """
     if settings.ALLOWED_DISCORD_USERS:
         return user_id in settings.ALLOWED_DISCORD_USERS
     if settings.ALLOWED_USER_ID is not None:
         return user_id == settings.ALLOWED_USER_ID
-    return True
+    return False

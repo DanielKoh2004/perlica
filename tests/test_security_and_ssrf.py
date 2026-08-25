@@ -58,5 +58,28 @@ def test_ssrf_url_validation_blocks_private_and_local():
 
 def test_ssrf_url_validation_allows_public():
     """Verify that public valid URLs pass validation."""
-    valid_url = "https://example.com/docs/api"
-    assert validate_safe_url(valid_url) == valid_url
+    assert validate_safe_url("https://example.com/docs") == "https://example.com/docs"
+    assert validate_safe_url("https://github.com/DanielKoh2004/perlica") == "https://github.com/DanielKoh2004/perlica"
+
+
+def test_copilot_authorization_fails_closed(monkeypatch):
+    """Verify Copilot authorization is fail-closed when no allowlist is configured."""
+    from src.security import is_user_authorized_for_copilot
+    from src.config import settings
+
+    # Case 1: Unconfigured -> fails closed
+    monkeypatch.setattr(settings, "ALLOWED_DISCORD_USERS", [])
+    monkeypatch.setattr(settings, "ALLOWED_USER_ID", None)
+    assert is_user_authorized_for_copilot(123456789) is False
+
+    # Case 2: Configured with ALLOWED_USER_ID
+    monkeypatch.setattr(settings, "ALLOWED_USER_ID", 123456789)
+    assert is_user_authorized_for_copilot(123456789) is True
+    assert is_user_authorized_for_copilot(999999999) is False
+
+    # Case 3: Configured with ALLOWED_DISCORD_USERS
+    monkeypatch.setattr(settings, "ALLOWED_DISCORD_USERS", [111, 222])
+    monkeypatch.setattr(settings, "ALLOWED_USER_ID", None)
+    assert is_user_authorized_for_copilot(111) is True
+    assert is_user_authorized_for_copilot(222) is True
+    assert is_user_authorized_for_copilot(333) is False

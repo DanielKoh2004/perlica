@@ -64,6 +64,7 @@ from src.github_sync import (
     is_eligible_repo_file,
     chunk_python_code,
     chunk_generic_code,
+    MAX_REPO_FILES,
 )
 from src.pdf_parser import parse_pdf_file
 from src.web_scraper import scrape_webpage
@@ -1412,12 +1413,13 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
             if eligible:
                 eligible_files.append(entry)
 
-        # Cap at 250 files
-        eligible_files = eligible_files[:250]
-        eligible_count = len(eligible_files)
+        # Truthful coverage accounting
+        total_eligible_count = len(eligible_files)
+        files_to_process = eligible_files[:MAX_REPO_FILES]
+        process_count = len(files_to_process)
         indexed_count = 0
 
-        for idx, entry in enumerate(eligible_files):
+        for idx, entry in enumerate(files_to_process):
             path = entry["path"]
             blob_sha = entry["sha"]
 
@@ -1431,7 +1433,7 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
                 continue
 
             # Fetch content
-            await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Indexing ({idx+1}/{eligible_count}): {path}")
+            await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Indexing ({idx+1}/{process_count}): {path}")
             raw_code = await fetch_github_blob_content(repo_name, path, commit_sha)
             if raw_code is None or scan_content_for_secrets(raw_code):
                 continue
@@ -1464,9 +1466,19 @@ async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
         # Purge deleted files
         await db.purge_unseen_source_files(source_id, current_sync_id=job_id)
 
-        status_tag = "COMPLETE" if indexed_count == eligible_count else "PARTIAL"
-        await db.update_source_status(source_id, eligible_count=eligible_count, indexed_count=indexed_count, status=status_tag)
-        await db.update_ingestion_job(job_id, "COMPLETED", progress_text=f"Sync finished ({indexed_count}/{eligible_count} files indexed).")
+        # Truthful coverage status: only COMPLETE if ALL eligible files in the repo were indexed and within cap
+        status_tag = "COMPLETE" if (indexed_count == total_eligible_count and total_eligible_count <= MAX_REPO_FILES) else "PARTIAL"
+        await db.update_source_status(
+            source_id,
+            eligible_count=total_eligible_count,
+            indexed_count=indexed_count,
+            status=status_tag,
+        )
+        await db.update_ingestion_job(
+            job_id,
+            "COMPLETED",
+            progress_text=f"Sync finished ({indexed_count}/{total_eligible_count} eligible files indexed, status={status_tag}).",
+        )
 
     except Exception as e:
         logger.error(f"Repo sync job #{job_id} failed: {e}", exc_info=True)

@@ -107,6 +107,14 @@ def cosine_similarity_matrix(query_vec: np.ndarray, doc_vecs: np.ndarray) -> np.
     return dot_products / (doc_norms * q_norm)
 
 
+# --- TEMPORARY CANDIDATE FILTER HEURISTICS (Option A) ---
+# Heuristic noise floor for zero-result filtering prior to Phase 2 calibration.
+# Filters out background semantic noise when lexical FTS5 returns 0 matches.
+# Not claimed as a calibrated confidence metric or probability score.
+TEMPORARY_DENSE_CANDIDATE_NOISE_FLOOR = 0.62
+TEMPORARY_LEXICAL_ASSISTED_NOISE_FLOOR = 0.40
+
+
 async def hybrid_retrieve(
     db: DatabaseManager,
     query: str,
@@ -132,8 +140,8 @@ async def hybrid_retrieve(
         doc_vecs = np.array([np.frombuffer(c["embedding_blob"], dtype=np.float32) for c in all_chunks])
         cos_scores = cosine_similarity_matrix(query_vec, doc_vecs)
 
-        # Baseline noise floor: if lexical search found nothing, require at least 0.62 cosine to consider dense evidence relevant
-        min_dense_cutoff = 0.40 if fts_hits else 0.62
+        # Apply candidate noise floor (Option A)
+        min_dense_cutoff = TEMPORARY_LEXICAL_ASSISTED_NOISE_FLOOR if fts_hits else TEMPORARY_DENSE_CANDIDATE_NOISE_FLOOR
 
         for i, score in enumerate(cos_scores):
             if score >= min_dense_cutoff:
@@ -273,7 +281,7 @@ async def synthesize_copilot_answer(
         commit = meta.get("commit_sha", "HEAD")
         page = meta.get("page", "")
         lines = meta.get("line_range", "")
-        last_synced = c.get("created_at", "")
+        last_synced = c.get("source_last_sync_at") or c.get("created_at", "")
 
         block = (
             f"SOURCE: {s_name}\n"

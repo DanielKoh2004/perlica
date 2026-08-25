@@ -2145,7 +2145,7 @@ class DatabaseManager:
         async def _execute_fts(conn, fts_q: str):
             if source_id is not None:
                 sql = """
-                    SELECT kc.*, bm25(knowledge_chunks_fts) as bm25_rank, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    SELECT kc.*, bm25(knowledge_chunks_fts) as bm25_rank, s.name as source_name, s.source_type, s.source_ref, s.last_sync_at as source_last_sync_at, sf.path as file_path
                     FROM knowledge_chunks_fts fts
                     JOIN knowledge_chunks kc ON fts.rowid = kc.id
                     JOIN sources s ON kc.source_id = s.id
@@ -2157,7 +2157,7 @@ class DatabaseManager:
                 params = (fts_q, source_id, limit)
             else:
                 sql = """
-                    SELECT kc.*, bm25(knowledge_chunks_fts) as bm25_rank, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    SELECT kc.*, bm25(knowledge_chunks_fts) as bm25_rank, s.name as source_name, s.source_type, s.source_ref, s.last_sync_at as source_last_sync_at, sf.path as file_path
                     FROM knowledge_chunks_fts fts
                     JOIN knowledge_chunks kc ON fts.rowid = kc.id
                     JOIN sources s ON kc.source_id = s.id
@@ -2204,7 +2204,7 @@ class DatabaseManager:
         async with self.get_connection() as conn:
             if source_id is not None:
                 sql = """
-                    SELECT kc.*, ce.model_id, ce.embedding_blob, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    SELECT kc.*, ce.model_id, ce.embedding_blob, s.name as source_name, s.source_type, s.source_ref, s.last_sync_at as source_last_sync_at, sf.path as file_path
                     FROM knowledge_chunks kc
                     JOIN chunk_embeddings ce ON kc.id = ce.chunk_id
                     JOIN sources s ON kc.source_id = s.id
@@ -2214,7 +2214,7 @@ class DatabaseManager:
                 params = (model_id, source_id)
             else:
                 sql = """
-                    SELECT kc.*, ce.model_id, ce.embedding_blob, s.name as source_name, s.source_type, s.source_ref, sf.path as file_path
+                    SELECT kc.*, ce.model_id, ce.embedding_blob, s.name as source_name, s.source_type, s.source_ref, s.last_sync_at as source_last_sync_at, sf.path as file_path
                     FROM knowledge_chunks kc
                     JOIN chunk_embeddings ce ON kc.id = ce.chunk_id
                     JOIN sources s ON kc.source_id = s.id

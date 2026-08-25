@@ -35,13 +35,17 @@ class FuelTracker:
         commit_sha="abcd1234ef",
     )
 
-    assert len(chunks) == 2  # 1 function, 1 class
+    assert len(chunks) == 3  # 1 function, 1 class header, 1 method
     fn_chunk = chunks[0]
     assert fn_chunk["metadata"]["symbol"] == "calculate_fuel_details"
     assert "Calculate fuel volume" in fn_chunk["metadata"]["docstring"]
     assert "os" in fn_chunk["metadata"]["imports"]
     assert "datetime.datetime" in fn_chunk["metadata"]["imports"]
     assert "#L" in fn_chunk["permalink_url"]
+
+    method_chunk = chunks[2]
+    assert method_chunk["metadata"]["symbol"] == "FuelTracker.log"
+    assert method_chunk["metadata"]["symbol_type"] == "method"
 
 
 def test_markdown_header_chunking():
