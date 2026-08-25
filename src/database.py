@@ -2468,13 +2468,17 @@ class DatabaseManager:
             return cur.lastrowid
 
     async def get_knowledge_sources_summary(self) -> List[Dict[str, Any]]:
-        """Fetch dashboard summary of all knowledge sources with chunk and file counts."""
+        """Fetch dashboard summary of all knowledge sources with chunk and file counts and detailed exclusion breakdown."""
         async with self.get_connection() as conn:
             async with conn.execute(
                 """
                 SELECT 
                     s.*,
                     COUNT(DISTINCT CASE WHEN sf.status = 'INDEXED' THEN sf.id END) as actual_files_count,
+                    COUNT(DISTINCT CASE WHEN sf.status = 'EXCLUDED_CAP' THEN sf.id END) as excluded_cap_count,
+                    COUNT(DISTINCT CASE WHEN sf.status = 'EXCLUDED_SECRET' THEN sf.id END) as excluded_secret_count,
+                    COUNT(DISTINCT CASE WHEN sf.status = 'EXCLUDED_SIZE' THEN sf.id END) as excluded_size_count,
+                    COUNT(DISTINCT CASE WHEN sf.status IN ('FAILED_FETCH', 'FAILED_PARSE', 'FAILED_EMBED') THEN sf.id END) as failed_files_count,
                     COUNT(DISTINCT kc.id) as total_chunks_count
                 FROM sources s
                 LEFT JOIN source_files sf ON s.id = sf.source_id

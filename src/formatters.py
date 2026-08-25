@@ -2115,9 +2115,23 @@ def format_sources_dashboard_embed(sources_summary: List[Dict[str, Any]]) -> dis
         chunks = s.get("total_chunks_count", 0)
         last_sync = s.get("last_sync_at") or s.get("created_at") or "Never"
 
+        file_line = f"**Coverage**: `{indexed} / {eligible}` indexed (`{actual_files}` files active)"
+        sub_breakdown = []
+        if s.get("excluded_cap_count", 0) > 0:
+            sub_breakdown.append(f"{s['excluded_cap_count']} cap limit")
+        if s.get("excluded_size_count", 0) > 0:
+            sub_breakdown.append(f"{s['excluded_size_count']} size limit")
+        if s.get("excluded_secret_count", 0) > 0:
+            sub_breakdown.append(f"{s['excluded_secret_count']} secret scan")
+        if s.get("failed_files_count", 0) > 0:
+            sub_breakdown.append(f"{s['failed_files_count']} failed")
+
+        if sub_breakdown:
+            file_line += f"\n_({', '.join(sub_breakdown)})_"
+
         details = [
             f"**Status**: {status_tag}",
-            f"**Files**: `{indexed} / {eligible}` eligible indexed (`{actual_files}` files active)",
+            file_line,
             f"**Chunks**: `{chunks}` semantic vectors",
             f"**Last Sync**: `{last_sync}`",
         ]

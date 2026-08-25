@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     )
     KNOWLEDGE_DIR: str = Field(default="knowledge", description="Directory for local markdown/PDF archives")
     COPILOT_CONTEXT_BUDGET_TOKENS: int = Field(default=2500, description="Max token budget for retrieved evidence in LLM prompt")
+    MAX_REPO_FILES: int = Field(default=250, description="Max eligible source files to index per repository")
+    MAX_SOURCE_FILE_BYTES: int = Field(default=1024 * 1024, description="Max source file size in bytes (1 MB default) before excluding")
 
     # Knowledge Base Scheduled Auto-Sync Settings
     REPO_AUTO_SYNC_ENABLED: bool = True
