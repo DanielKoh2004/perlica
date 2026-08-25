@@ -223,6 +223,26 @@ def chunk_generic_code(
     return chunks
 
 
+def format_github_headers(token: Optional[str] = None) -> Dict[str, str]:
+    """Format sanitized HTTP headers for GitHub REST API authentication."""
+    headers = {
+        "User-Agent": "Perlica-Knowledge-Copilot",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    raw_token = token or settings.GITHUB_TOKEN
+    if raw_token:
+        auth_token = raw_token.strip().strip("'\"")
+        if auth_token:
+            if auth_token.startswith("Bearer ") or auth_token.startswith("token "):
+                headers["Authorization"] = auth_token
+            elif auth_token.startswith("ghp_") or auth_token.startswith("github_pat_"):
+                headers["Authorization"] = f"token {auth_token}"
+            else:
+                headers["Authorization"] = f"Bearer {auth_token}"
+    return headers
+
+
 async def fetch_github_repo_tree(
     repo_name: str,
     branch: str = "main",
@@ -234,10 +254,8 @@ async def fetch_github_repo_tree(
     2. Fetches the recursive tree using the commit SHA.
     Returns: (commit_sha, tree_entries, is_truncated)
     """
-    auth_token = token or settings.GITHUB_TOKEN
-    headers = {"User-Agent": "Perlica-Knowledge-Copilot", "Accept": "application/vnd.github+json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+    headers = format_github_headers(token)
+    auth_configured = "Authorization" in headers
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         # Step 1: Resolve branch to exact Commit SHA
@@ -259,7 +277,7 @@ async def fetch_github_repo_tree(
                 "Please verify that your GITHUB_TOKEN is valid and active."
             )
         elif commit_resp.status_code == 404:
-            if not auth_token:
+            if not auth_configured:
                 raise RuntimeError(
                     f"Repository '{repo_name}' not found (404). "
                     "If this is a private repository, please add your 'GITHUB_TOKEN' (with 'repo' scope) to your environment/.env file."
@@ -267,7 +285,7 @@ async def fetch_github_repo_tree(
             else:
                 raise RuntimeError(
                     f"Repository '{repo_name}' (branch '{branch}') not found (404). "
-                    "Please verify that the repository name and branch exist, and that your GITHUB_TOKEN has access permissions."
+                    "Please verify that the repository name and branch exist, and that your GITHUB_TOKEN has access permissions to this private repository."
                 )
 
         commit_resp.raise_for_status()
@@ -294,10 +312,7 @@ async def fetch_github_blob_content(
     """
     Fetch raw blob content for a specific file in a GitHub repository.
     """
-    auth_token = token or settings.GITHUB_TOKEN
-    headers = {"User-Agent": "Perlica-Knowledge-Copilot", "Accept": "application/vnd.github+json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+    headers = format_github_headers(token)
 
     encoded_path = urllib.parse.quote(file_path.replace("\\", "/"))
     api_url = f"https://api.github.com/repos/{repo_name}/contents/{encoded_path}?ref={ref}"

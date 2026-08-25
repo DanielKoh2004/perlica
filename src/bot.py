@@ -1393,6 +1393,8 @@ async def source_autocomplete(
 async def run_repo_sync_job(job_id: int, repo_name: str, branch: str = "main"):
     """Background worker to synchronize a GitHub repository with manifest diffing."""
     try:
+        token_set = bool(settings.GITHUB_TOKEN and settings.GITHUB_TOKEN.strip())
+        logger.info(f"Starting repo sync job #{job_id} for '{repo_name}' (branch='{branch}'). GITHUB_TOKEN set: {token_set}")
         await db.update_ingestion_job(job_id, "RUNNING", progress_text=f"Fetching tree for {repo_name}...")
         commit_sha, tree_entries, is_truncated = await fetch_github_repo_tree(repo_name, branch=branch)
 
