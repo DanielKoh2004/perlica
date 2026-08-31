@@ -1,28 +1,29 @@
 <div align="center">
 
-<a href="#">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F172A,100:2563EB&height=220&section=header&text=AI%20Audit%20Report%20Automation&fontSize=42&fontColor=FFFFFF&animation=fadeIn&fontAlignY=38&desc=From%20raw%20audit%20evidence%20to%20structured%2C%20reviewable%20reports&descAlignY=60&descSize=17" width="100%"/>
+<a href="https://github.com/DanielKoh2004/perlica">
+  <img src="https://capsule-render.vercel.app/api?type=rect&color=0B1020&height=230&section=header&text=PERLICA&fontSize=74&fontColor=FFFFFF&animation=fadeIn&fontAlignY=43&desc=Your%20life%20OS%2C%20inside%20Discord.&descAlignY=67&descSize=18" width="100%"/>
 </a>
 
 <br>
 
-### **AI-Assisted Audit Report Automation**
+### 🧠 **Personal Intelligence · Built for Discord**
 
-*Turn fragmented audit evidence into structured, traceable and review-ready reports.*
-
-<br>
-
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python\&logoColor=white)](#)
-[![AI](https://img.shields.io/badge/AI-RAG%20Pipeline-7C3AED)](#)
-[![Backend](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi\&logoColor=white)](#)
-[![Database](https://img.shields.io/badge/Database-PostgreSQL-336791?logo=postgresql\&logoColor=white)](#)
-[![Status](https://img.shields.io/badge/Status-MVP%20Development-F59E0B)](#)
+**Capture what matters. Remember what happened. Surface what comes next.**
 
 <br>
 
-> **Evidence in. Reasoned findings out.**
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Discord.py](https://img.shields.io/badge/Discord.py-2.3%2B-5865F2?logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
+[![Groq](https://img.shields.io/badge/LLM-Groq-F55036)](https://groq.com/)
+[![Pydantic](https://img.shields.io/badge/Validation-Pydantic-E92063)](https://docs.pydantic.dev/)
+[![SQLite](https://img.shields.io/badge/Storage-SQLite-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![FastEmbed](https://img.shields.io/badge/RAG-FastEmbed-7C3AED)](https://github.com/qdrant/fastembed)
+
+<br><br>
+
+> **Perlica turns Discord into a personal command center.**
 >
-> An AI-assisted workflow designed to reduce the manual effort required to transform audit evidence into consistent, explainable reports.
+> Expenses, tasks, goals, bills, investments, reminders, summaries and even your GitHub codebase — captured through natural language and organized into one persistent assistant.
 
 <br>
 
@@ -30,867 +31,790 @@
 
 ---
 
-## 🧭 What Is This?
+## 🌌 The Idea
 
-Audit work rarely starts with a clean dataset.
+Most productivity tools make you **enter information into forms**.
 
-It starts with **documents, spreadsheets, screenshots, policies, records and scattered pieces of evidence**.
+Perlica tries to make the interaction disappear.
 
-The challenge is not simply generating text.
-
-The real challenge is:
+You say:
 
 ```text
-Collect Evidence
-       ↓
-Understand Context
-       ↓
-Retrieve Relevant Evidence
-       ↓
-Reason Across Sources
-       ↓
-Generate Findings
-       ↓
-Attach Evidence
-       ↓
-Human Review
-       ↓
-Final Report
+"Spent RM18.50 on makan at the mamak."
 ```
 
-**AI-Assisted Audit Report Automation** is designed around this workflow.
+Perlica can understand the intent, normalize the category, and turn the message into structured data.
 
-Rather than treating an LLM as a generic text generator, the system separates **evidence retrieval, reasoning, structured output and report generation** so that the resulting report can be inspected and traced back to its supporting evidence.
+Or:
+
+```text
+"Remind me to finish the FYP methodology tomorrow at 9pm."
+```
+
+Or:
+
+```text
+"How much did I spend on transport this month?"
+```
+
+Or even:
+
+```text
+"Read my repo and explain how the RAG pipeline works."
+```
+
+The interaction stays conversational.
+
+The data underneath stays structured.
 
 ---
 
-## 🎯 Core Philosophy
+# ⚡ What Perlica Does
 
-### **Don't let AI replace the auditor.**
+<table>
+<tr>
+<td width="33%" align="center">
 
-Let AI handle the repetitive work.
+### 💸 MONEY
 
-Let humans handle judgement.
+Expenses<br>
+Budgets<br>
+Bills<br>
+Investments
 
-```text
-┌─────────────────────────────────────────────────────┐
-│                    AUDIT EVIDENCE                   │
-│                                                     │
-│ Documents · Policies · Records · Findings · Data   │
-└──────────────────────┬──────────────────────────────┘
-                       │
-                       ▼
-             ┌───────────────────┐
-             │   Evidence Layer  │
-             │  Parse + Retrieve │
-             └─────────┬─────────┘
-                       │
-                       ▼
-             ┌───────────────────┐
-             │   Reasoning Layer │
-             │ Analyze + Synthesize│
-             └─────────┬─────────┘
-                       │
-                       ▼
-             ┌───────────────────┐
-             │ Report Layer      │
-             │ Structure + Render│
-             └─────────┬─────────┘
-                       │
-                       ▼
-              ┌────────────────┐
-              │ Human Reviewer │
-              └────────────────┘
-```
+</td>
+<td width="33%" align="center">
 
-The goal is **audit acceleration without sacrificing traceability**.
+### ✅ EXECUTION
 
----
+Tasks<br>
+Projects<br>
+Goals<br>
+Milestones
 
-# ✨ Why It Exists
+</td>
+<td width="33%" align="center">
 
-Traditional report preparation often requires auditors to repeatedly perform the same mechanical tasks:
+### 🧠 INTELLIGENCE
 
-| Manual Task                           | Automation Opportunity            |
-| ------------------------------------- | --------------------------------- |
-| Search through supporting documents   | 🔎 Semantic evidence retrieval    |
-| Extract relevant information          | 📄 Structured document processing |
-| Compare evidence against requirements | 🧠 AI-assisted reasoning          |
-| Draft findings                        | ✍️ Structured synthesis           |
-| Insert supporting evidence            | 🔗 Automatic citations            |
-| Format final reports                  | 📑 Automated report generation    |
-| Review inconsistencies                | ✅ Validation and human review     |
+RAG Copilot<br>
+GitHub Knowledge<br>
+Web Research<br>
+Daily Briefings
 
-The system focuses on removing the **repetitive cognitive overhead** while keeping the auditor in control of the final judgement.
+</td>
+</tr>
+</table>
+
+Perlica is not just a chatbot sitting on top of an LLM.
+
+It is a **stateful personal agent** with a database, deterministic application logic, structured extraction, retrieval, scheduling and interactive Discord interfaces.
 
 ---
 
-# 🧠 System Concept
+# 🧩 Core Capabilities
 
-## The Evidence → Reasoning → Report Pipeline
+## 💰 Personal Finance
+
+Talk to Perlica about money naturally instead of maintaining spreadsheets manually.
+
+| Capability | Example |
+|---|---|
+| **Expense capture** | `"RM25 lunch at Mamak"` |
+| **Smart categorisation** | `makan` → Food & Dining |
+| **Budget tracking** | `"Set my food budget to RM800"` |
+| **Recurring bills** | Track subscriptions and commitments |
+| **Investment tracking** | Stocks, ETFs, crypto, gold and savings |
+| **Fuel tracking** | Extract fuel details from receipts |
+| **Spending analysis** | Ask for weekly or monthly breakdowns |
+
+The extractor normalizes free-form input into typed expense and task objects instead of storing raw chat messages as the source of truth. fileciteturn10file0
+
+---
+
+## ✅ Tasks & Projects
+
+Perlica treats a task as more than a line of text.
+
+A task can carry:
 
 ```text
-        RAW INPUT
-            │
-            ▼
-┌─────────────────────────┐
-│ Document Ingestion      │
-│ PDF / DOCX / XLSX / etc │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│ Document Processing     │
-│ Parsing + Chunking      │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│ Knowledge / Retrieval   │
-│ Embeddings + Search     │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│ Audit Reasoning         │
-│ Evidence → Finding      │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│ Structured Answer       │
-│ Findings + Evidence     │
-└────────────┬────────────┘
-             │
-             ▼
-┌─────────────────────────┐
-│ Report Formatter        │
-│ Sections + Citations    │
-└────────────┬────────────┘
-             │
-             ▼
-       FINAL REPORT
+Description
+Priority
+Due date
+Due time
+Project phases / milestones
+Status
 ```
+
+That means a message like:
+
+```text
+"Finish the hackathon prototype by Friday. Break it into
+UI, API integration and testing. High priority."
+```
+
+can become an actionable project rather than a vague reminder.
+
+Tasks can also be edited, deleted, reopened, snoozed and completed through the Discord workflow.
+
+---
+
+## 🎯 Goals That Become Actions
+
+Large goals are difficult to execute when they stay abstract.
+
+Perlica's goal flow is designed to turn them into **phases and concrete next actions**.
+
+```text
+BIG GOAL
+   │
+   ├── Phase 1
+   │     ├── Task A
+   │     └── Task B
+   │
+   ├── Phase 2
+   │     ├── Task C
+   │     └── Task D
+   │
+   └── Milestone → ✅
+```
+
+The result is a system that can remember not only **what you want**, but also **where you are in getting there**.
+
+---
+
+# 🤖 The Intelligence Layer
+
+## Natural-Language Extraction
+
+Perlica uses an LLM-backed extraction layer with structured Pydantic schemas.
+
+The model doesn't simply answer the user.
+
+It first determines the **intent and structured data** hidden inside the message.
+
+```text
+Discord Message
+      │
+      ▼
+┌────────────────────┐
+│ Intent + Extraction │
+└─────────┬──────────┘
+          │
+          ▼
+┌────────────────────┐
+│ Structured Payload │
+├────────────────────┤
+│ expenses[]         │
+│ tasks[]            │
+│ edits / deletes    │
+│ budgets            │
+│ goals              │
+│ queries             │
+└─────────┬──────────┘
+          │
+          ▼
+┌────────────────────┐
+│ Application Logic  │
+└─────────┬──────────┘
+          │
+          ▼
+      SQLite DB
+```
+
+This architecture keeps **LLM interpretation** separate from **database mutation**.
+
+---
+
+# 🔎 Perlica Copilot
+
+The more unusual part of Perlica is its ability to become a **knowledge-aware coding and research assistant**.
+
+You can point it at knowledge sources and ask questions from Discord rather than opening every file manually.
+
+### Knowledge sources
+
+```text
+📁 Local Markdown / PDF knowledge
+🐙 GitHub repositories
+🌐 Public web pages
+```
+
+The codebase-aware pipeline can structurally chunk Python using the AST, preserve file paths and line ranges, and create GitHub permalinks for retrieved code evidence. fileciteturn7file0
+
+---
+
+## 🧠 Hybrid RAG
+
+Perlica combines two retrieval signals:
+
+```text
+                 USER QUESTION
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+        SQLite FTS5          Dense Search
+          BM25              FastEmbed
+              │                 │
+              └────────┬────────┘
+                       ▼
+              Reciprocal Rank Fusion
+                       │
+                       ▼
+               Relevant Evidence
+                       │
+                       ▼
+                LLM Synthesis
+                       │
+                       ▼
+             Answer + Citations
+```
+
+The retrieval engine uses **SQLite FTS5/BM25 + FastEmbed dense embeddings + Reciprocal Rank Fusion (RRF)** rather than relying on a single search mechanism. It also records coverage and retrieval telemetry as part of the structured answer model. fileciteturn5file0
+
+---
+
+# 🔗 Answers With Evidence
+
+Perlica's Copilot response model is intentionally structured around provenance.
+
+Each answer can carry:
+
+```text
+Answer
+Query
+Citations
+Evidence IDs
+Evidence payloads
+Coverage status
+Answer status
+Retrieval telemetry
+```
+
+A citation can retain:
+
+```text
+Source name
+Source type
+Location
+Chunk ID
+File path
+Permalink
+```
+
+So instead of:
+
+> "I think this function does X."
+
+you can get:
+
+```text
+Answer
+   │
+   ├── Source: src/rag_engine.py
+   │      └── Lines 120–170
+   │
+   ├── Source: knowledge/architecture.md
+   │      └── Section: Retrieval
+   │
+   └── Coverage: COMPLETE
+```
+
+That distinction matters when the assistant is explaining a real codebase.
+
+---
+
+# 🛡️ Security By Design
+
+A personal assistant should not accidentally become a data exfiltration assistant.
+
+Perlica therefore places security checks around the knowledge pipeline.
+
+### Repository filtering
+
+The GitHub sync layer can exclude:
+
+```text
+.env files
+Private keys
+Certificates
+Credential files
+Binary files
+Lockfiles
+Large files
+Ignored directories
+```
+
+The repository scanner also checks content for secrets before indexing it. fileciteturn7file0
+
+### Web safety
+
+Web ingestion uses a safe URL fetcher with redirect and timeout controls, extracts readable content, and rejects extracted content when secret-like material is detected. fileciteturn11file0
+
+### Access control
+
+Copilot access can be restricted through configured Discord user IDs, keeping the knowledge interface intentionally scoped. fileciteturn6file0
+
+---
+
+# ⏰ Your Assistant Should Know When to Speak
+
+Perlica isn't designed to wait for `/ask` all day.
+
+Scheduled workflows include configurable:
+
+```text
+🌅 Morning Briefing
+🌙 Daily Summary
+📅 Weekly Executive Review
+🔄 Repository Auto-Sync
+```
+
+The default configuration uses **Asia/Kuala_Lumpur** as the timezone and supports configurable dispatch times. fileciteturn6file0
+
+Think of it as:
+
+```text
+             YOU
+              │
+       ┌──────┴──────┐
+       ▼             ▼
+   "Ask Perlica"   "Perlica tells me"
+       │             │
+       └──────┬──────┘
+              ▼
+      Persistent Context
+```
+
+---
+
+# 📅 The Daily Loop
+
+A typical day can look like this:
+
+```text
+08:30 ── 🌅 Morning Briefing
+          ↓
+          What matters today?
+
+10:15 ── 💬 Capture expense / task
+          ↓
+          No spreadsheet. No form.
+
+14:00 ── 🧠 Ask Copilot
+          ↓
+          Search personal knowledge / code
+
+18:30 ── ✅ Complete tasks
+          ↓
+          Progress updates automatically
+
+22:00 ── 🌙 Daily Summary
+          ↓
+          What happened today?
+          What changed?
+          What's next?
+```
+
+The result is a lightweight feedback loop between **capture → context → action → reflection**.
 
 ---
 
 # 🏗️ Architecture
 
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│                         USER / AUDITOR                        │
-│                                                               │
-│ Upload Evidence · Review Findings · Inspect Citations        │
-└───────────────────────────────┬───────────────────────────────┘
-                                │
-                                ▼
-┌───────────────────────────────────────────────────────────────┐
-│                         APPLICATION                           │
-│                                                               │
-│  ┌──────────────┐   ┌───────────────┐   ┌────────────────┐  │
-│  │ Ingestion    │   │ Audit Workflow│   │ Report Builder │  │
-│  └──────┬───────┘   └───────┬───────┘   └───────┬────────┘  │
-│         │                     │                   │            │
-└─────────┼─────────────────────┼───────────────────┼────────────┘
-          │                     │                   │
-          ▼                     ▼                   ▼
-┌───────────────────────────────────────────────────────────────┐
-│                         AI / RAG LAYER                        │
-│                                                               │
-│  Retrieval → Context Assembly → Reasoning → Validation       │
-│                                                               │
-│                  ┌─────────────────────────┐                  │
-│                  │ Structured AI Response  │                  │
-│                  │                         │                  │
-│                  │ • Findings              │                  │
-│                  │ • Evidence              │                  │
-│                  │ • Citations             │                  │
-│                  │ • Confidence / Coverage │                  │
-│                  └────────────┬────────────┘                  │
-└───────────────────────────────┼───────────────────────────────┘
-                                │
-                                ▼
-┌───────────────────────────────────────────────────────────────┐
-│                          DATA LAYER                            │
-│                                                               │
-│ Vector Store · Relational Database · Audit Artifacts         │
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         DISCORD                             │
+│                                                             │
+│ Messages · DMs · Buttons · Modals · Selectors · Voice      │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      PERLICA AGENT                          │
+│                                                             │
+│  ┌──────────────┐   ┌────────────────┐   ┌──────────────┐ │
+│  │ Extraction   │   │ Action / Query │   │ Scheduler    │ │
+│  │ Engine       │   │ Router         │   │ & Briefings  │ │
+│  └──────┬───────┘   └───────┬────────┘   └──────┬───────┘ │
+│         │                    │                   │         │
+│         └────────────────────┼───────────────────┘         │
+│                              ▼                             │
+│                    ┌──────────────────┐                   │
+│                    │ Database Manager │                   │
+│                    └────────┬─────────┘                   │
+│                             │                             │
+│               ┌─────────────┴─────────────┐              │
+│               ▼                           ▼              │
+│         Personal Data                Knowledge Base       │
+│                                                  │         │
+│        expenses · tasks · goals                 ▼         │
+│        bills · budgets · etc.          ┌────────────────┐ │
+│                                        │ Hybrid RAG     │ │
+│                                        │ BM25 + Dense   │ │
+│                                        │ + RRF          │ │
+│                                        └───────┬────────┘ │
+│                                                ▼          │
+│                                           LLM Synthesis   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-# 🔍 Evidence-First RAG
-
-The system is designed around a simple principle:
-
-> **A generated statement should have evidence behind it.**
-
-Instead of directly asking an LLM:
+# 🧱 Project Structure
 
 ```text
-"Write my audit report."
-```
-
-the system progressively builds context:
-
-```text
-Question
-   ↓
-Retrieve relevant evidence
-   ↓
-Rank / filter evidence
-   ↓
-Construct grounded context
-   ↓
-Generate structured finding
-   ↓
-Attach supporting citations
-   ↓
-Validate output
-```
-
-This makes the AI output more useful for audit workflows because reviewers can inspect **why a finding was produced**.
-
----
-
-# 📦 Structured AI Output
-
-Rather than allowing the model to return an uncontrolled block of prose, the synthesis layer produces structured information.
-
-Example:
-
-```json
-{
-  "finding": {
-    "title": "Access Review Evidence Gap",
-    "severity": "Medium",
-    "description": "Periodic access review evidence was incomplete.",
-    "impact": "Insufficient evidence exists to demonstrate...",
-    "recommendation": "Establish and retain periodic review records."
-  },
-  "citations": [
-    {
-      "source": "Access_Control_Policy.pdf",
-      "page": 12
-    },
-    {
-      "source": "User_Access_Review.xlsx",
-      "sheet": "Q2 Review"
-    }
-  ]
-}
-```
-
-This separation gives the application something much more valuable than plain text:
-
-**machine-readable audit reasoning.**
-
----
-
-# 🧩 Key Components
-
-## 📥 Evidence Ingestion
-
-Designed to bring heterogeneous audit evidence into one processing pipeline.
-
-Typical sources include:
-
-```text
-PDF
-DOCX
-XLSX
-CSV
-Text
-Screenshots / supporting material
-```
-
-Each source is transformed into a representation that can be indexed, retrieved and referenced during the reasoning process.
-
----
-
-## 🔎 Retrieval Engine
-
-The retrieval layer identifies evidence relevant to a particular audit question.
-
-Conceptually:
-
-```text
-Audit Requirement
-       │
-       ▼
-Semantic Search
-       │
-       ▼
-Candidate Evidence
-       │
-       ▼
-Relevance Filtering
-       │
-       ▼
-Context Window
-```
-
-The objective is not to retrieve **everything**.
-
-It is to retrieve the **right evidence**.
-
----
-
-## 🧠 AI Synthesis
-
-The synthesis layer combines retrieved evidence into structured findings.
-
-The output can contain:
-
-* Finding
-* Description
-* Impact
-* Recommendation
-* Evidence
-* Citations
-* Confidence / coverage metadata
-
-This creates a clean boundary between **AI reasoning** and **presentation**.
-
----
-
-## 🔗 Citation Layer
-
-Every generated finding can maintain a relationship with the evidence used to support it.
-
-```text
-Finding
-   │
-   ├── Evidence #01
-   │      └── Policy.pdf → Page 14
-   │
-   ├── Evidence #02
-   │      └── AccessReview.xlsx → Sheet Q2
-   │
-   └── Evidence #03
-          └── Procedure.docx → Section 3.2
-```
-
-The result is an **evidence graph**, rather than disconnected AI-generated paragraphs.
-
----
-
-# 🖥️ Report Generation
-
-The final report layer transforms structured findings into a human-friendly deliverable.
-
-```text
-STRUCTURED FINDINGS
-        │
-        ▼
-┌───────────────────────┐
-│ Report Template       │
-├───────────────────────┤
-│ Executive Summary     │
-│ Audit Scope           │
-│ Findings              │
-│ Risk Assessment       │
-│ Recommendations       │
-│ Supporting Evidence   │
-│ References            │
-└───────────┬───────────┘
-            │
-            ▼
-      FINAL REPORT
-```
-
-The important architectural decision is that **formatting happens after reasoning**.
-
-This allows the same structured result to support multiple frontends and report formats.
-
----
-
-# 🛡️ Design Principles
-
-### 01 — Evidence Before Generation
-
-The model should reason over retrieved evidence rather than inventing unsupported conclusions.
-
-### 02 — Structured Before Presentation
-
-AI produces structured data first.
-
-UI and report generators decide how that data should look.
-
-### 03 — Traceability by Default
-
-Important claims should remain connected to their supporting evidence.
-
-### 04 — Human-in-the-Loop
-
-AI assists with analysis and drafting.
-
-The auditor retains final authority.
-
-### 05 — Modular AI Pipeline
-
-Retrieval, synthesis, validation and formatting remain separable components so that individual parts can evolve independently.
-
----
-
-# 📊 Quality Dimensions
-
-A useful audit AI system cannot be judged by generation quality alone.
-
-We care about multiple dimensions:
-
-| Dimension              | Question                                       |
-| ---------------------- | ---------------------------------------------- |
-| **Retrieval Accuracy** | Did we retrieve the right evidence?            |
-| **Groundedness**       | Is the finding supported by evidence?          |
-| **Citation Coverage**  | Can important claims be traced?                |
-| **Consistency**        | Does the output follow the expected structure? |
-| **Reviewability**      | Can an auditor quickly validate it?            |
-| **Generation Quality** | Is the final report clear and professional?    |
-
-The objective is therefore not simply:
-
-```text
-Better AI
-```
-
-but:
-
-```text
-Better Evidence
-        +
-Better Reasoning
-        +
-Better Traceability
-        =
-Better Audit Workflow
-```
-
----
-
-# 🧰 Technology Direction
-
-| Layer               | Technology                    |
-| ------------------- | ----------------------------- |
-| Application Backend | Python                        |
-| API Layer           | FastAPI                       |
-| AI / LLM Layer      | LLM-based reasoning pipeline  |
-| Retrieval           | RAG / semantic retrieval      |
-| Structured Output   | Typed schemas / JSON          |
-| Data Storage        | Relational + vector storage   |
-| Document Processing | File-specific parsers         |
-| Report Generation   | Structured document rendering |
-| Frontend            | Web-based interface           |
-
-> Technology choices can evolve independently because the architecture separates ingestion, retrieval, reasoning and presentation.
-
----
-
-# 📂 Project Structure
-
-```text
-project/
+perlica/
 │
-├── backend/
-│   ├── api/
-│   │   ├── main.py
-│   │   ├── routes/
-│   │   └── schemas/
-│   │
-│   ├── ingestion/
-│   │   ├── loaders/
-│   │   ├── parsers/
-│   │   └── chunking/
-│   │
-│   ├── retrieval/
-│   │   ├── embeddings/
-│   │   ├── vector_store/
-│   │   └── retriever.py
-│   │
-│   ├── synthesis/
-│   │   ├── prompts/
-│   │   ├── pipeline.py
-│   │   └── validators.py
-│   │
-│   ├── formatters/
-│   │   ├── report.py
-│   │   └── citations.py
-│   │
-│   └── config/
+├── src/
+│   ├── bot.py              # Discord interface + interaction workflows
+│   ├── config.py           # Environment-driven configuration
+│   ├── database.py         # SQLite persistence + domain queries
+│   ├── extractor.py        # LLM extraction + structured domain models
+│   ├── formatters.py       # Discord embeds, reports and UI formatting
+│   ├── github_sync.py      # Repository ingestion + code chunking
+│   ├── goal_wizard.py      # Guided goal creation workflow
+│   ├── pdf_parser.py       # PDF knowledge ingestion
+│   ├── rag_engine.py       # Embeddings, retrieval and synthesis
+│   ├── security.py         # Authorization + secret scanning
+│   └── web_scraper.py      # Safe webpage ingestion
 │
-├── frontend/
-│   ├── components/
-│   ├── pages/
-│   ├── hooks/
-│   └── services/
-│
-├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── examples/
-│
-├── tests/
-│
-├── docs/
-│
-└── README.md
+├── knowledge/              # Local knowledge archive
+├── tests/                  # Automated tests
+├── run_local_test.py       # Local integration / test runner
+├── Dockerfile              # Container deployment
+├── fly.toml                # Fly.io deployment configuration
+├── requirements.txt        # Python dependencies
+└── .env.example            # Environment configuration template
+```
+
+The repository is intentionally centered around small domain modules while keeping the Discord experience cohesive. fileciteturn4file0
+
+---
+
+# 🧰 Technology Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Interface | **Discord.py** | Conversational UI, components and interactions |
+| LLM | **Groq** | Fast structured language-model inference |
+| Structured AI | **Instructor + Pydantic** | Typed extraction and validation |
+| Database | **SQLite / aiosqlite** | Persistent personal state |
+| Embeddings | **FastEmbed** | Local semantic embeddings |
+| Retrieval | **SQLite FTS5 + Dense + RRF** | Hybrid knowledge retrieval |
+| Web ingestion | **Trafilatura + httpx** | Safe article extraction |
+| Documents | **pypdf** | PDF ingestion |
+| Deployment | **Docker + Fly.io** | Containerized deployment |
+
+The dependency set in the repository includes the above core components. fileciteturn3file0
+
+---
+
+# 🚀 Getting Started
+
+## 1. Clone
+
+```bash
+git clone https://github.com/DanielKoh2004/perlica.git
+cd perlica
+```
+
+## 2. Create a virtual environment
+
+```bash
+python -m venv .venv
+```
+
+### Windows
+
+```powershell
+.venv\Scripts\activate
+```
+
+### macOS / Linux
+
+```bash
+source .venv/bin/activate
+```
+
+## 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## 4. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Then configure at minimum:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token
+ALLOWED_USER_ID=your_discord_user_id
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=your_supported_groq_model
+```
+
+Optional Copilot configuration:
+
+```env
+GITHUB_TOKEN=your_github_token
+```
+
+The supplied configuration template also exposes timezone, briefing schedules and persistence settings. fileciteturn15file0
+
+---
+
+# ▶️ Run
+
+Start the bot using the repository's application entrypoint.
+
+```bash
+python -m src.bot
+```
+
+For local validation, the repository also provides:
+
+```bash
+python run_local_test.py
 ```
 
 ---
 
-# 🚦 Workflow
+# 🧪 Testing
 
-### Step 1 — Upload Evidence
+The project includes `pytest` and `pytest-asyncio` for automated testing.
 
-Provide the audit documents and supporting material.
+```bash
+pytest
+```
 
-### Step 2 — Process
+For targeted development:
 
-Documents are parsed, normalized and prepared for retrieval.
-
-### Step 3 — Ask / Define Audit Requirement
-
-The system receives the audit requirement, question or assessment criteria.
-
-### Step 4 — Retrieve
-
-Relevant evidence is identified from the knowledge base.
-
-### Step 5 — Synthesize
-
-The AI generates a structured finding grounded in the retrieved evidence.
-
-### Step 6 — Inspect
-
-The auditor reviews the finding and its supporting citations.
-
-### Step 7 — Generate
-
-Approved structured findings are transformed into the final report.
+```bash
+pytest -q
+```
 
 ---
 
-# 🔬 Example
+# 🎛️ Configuration
 
-Suppose the audit requirement is:
+Important runtime settings include:
 
-```text
-Verify that privileged user access is periodically reviewed.
-```
+| Setting | Default |
+|---|---:|
+| `DATABASE_PATH` | `tracker.db` |
+| `TIMEZONE` | `Asia/Kuala_Lumpur` |
+| `MORNING_BRIEFING_TIME` | `08:30` |
+| `DAILY_SUMMARY_TIME` | `22:00` |
+| `WEEKLY_REVIEW_TIME` | `20:00` |
+| `REPO_AUTO_SYNC_ENABLED` | `true` |
+| `REPO_AUTO_SYNC_TIME` | `04:00` |
+| `MAX_REPO_FILES` | `250` |
+| `MAX_SOURCE_FILE_BYTES` | `1 MB` |
 
-The system might retrieve:
-
-```text
-Access Control Policy
-        +
-Quarterly Access Review
-        +
-User Permission Export
-```
-
-Then produce:
-
-```text
-Finding
-────────────────────────────────────────
-Privileged access review evidence is
-incomplete for the sampled period.
-
-Risk
-────────────────────────────────────────
-Without complete review evidence, the
-organisation cannot demonstrate that
-excessive privileges are periodically
-identified and removed.
-
-Recommendation
-────────────────────────────────────────
-Implement a documented quarterly review
-process with retained approval evidence.
-
-Evidence
-────────────────────────────────────────
-✓ Access_Control_Policy.pdf — p.12
-✓ Access_Review_Q2.xlsx — Review Sheet
-```
-
-The important part is not merely that the AI wrote the finding.
-
-It is that the reviewer can **follow the chain back to the evidence**.
+These values are defined in the application's settings model and can be overridden through environment variables. fileciteturn6file0
 
 ---
 
-# 🌐 Product Vision
+# 🎨 Discord UX
 
-The long-term goal is bigger than automatic report writing.
+Perlica uses native Discord interaction patterns instead of forcing everything through plain text.
 
-The system can evolve toward an **AI audit intelligence layer**:
+Examples include:
 
 ```text
-                 ┌──────────────────────┐
-                 │   AUDIT KNOWLEDGE    │
-                 │                      │
-                 │ Policies             │
-                 │ Controls             │
-                 │ Evidence             │
-                 │ Historical Findings  │
-                 └──────────┬───────────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │   AI AUDIT ENGINE    │
-                 │                      │
-                 │ Retrieve             │
-                 │ Compare              │
-                 │ Reason               │
-                 │ Validate             │
-                 └──────────┬───────────┘
-                            │
-             ┌──────────────┼──────────────┐
-             ▼              ▼              ▼
-        Findings       Risk Signals    Reports
+┌───────────────────────────────┐
+│ ✏️  Edit Expense              │
+│                               │
+│ Amount      [ 15.50       ]   │
+│ Category    [ Food & Dining ] │
+│ Note        [ Lunch       ]   │
+│                               │
+│        [ Save ] [ Cancel ]    │
+└───────────────────────────────┘
 ```
 
-Instead of asking:
+Alongside text responses, the bot includes formatted views for summaries, budgets, goals, investments, calendars, live dashboards, Copilot answers and knowledge-source management. fileciteturn9file0
 
-> "Can AI write an audit report?"
+---
 
-the more interesting question becomes:
+# 🔥 Design Principles
 
-> **"Can AI build a continuously traceable understanding of an organisation's audit evidence?"**
+### **1. Natural First**
+
+The user should describe what happened instead of learning a command language.
+
+### **2. State Over Chat History**
+
+Important information becomes structured application state instead of disappearing into an old message.
+
+### **3. AI With Guardrails**
+
+LLM output is constrained through typed schemas, deterministic application logic and security filters.
+
+### **4. Evidence Over Vibes**
+
+When the assistant answers questions about a knowledge source or codebase, the goal is to return evidence and citations — not confident guesses.
+
+### **5. One Interface**
+
+Personal finance, execution, planning and technical knowledge should not require four separate applications.
 
 ---
 
 # 🗺️ Roadmap
 
 ```text
-PHASE 01
-████████████████████  Foundation
-Document ingestion
-RAG retrieval
-Structured synthesis
-
-        ↓
-
-PHASE 02
-████████████████░░░░  Audit Intelligence
-Citation graph
-Evidence coverage
-Validation
-Human review workflows
-
-        ↓
-
-PHASE 03
-████████████░░░░░░░░  Automation
-Automated report generation
-Reusable audit templates
-Workflow orchestration
-
-        ↓
-
-PHASE 04
-████████░░░░░░░░░░░░  Intelligence Layer
-Historical audit knowledge
-Cross-audit comparison
-Risk trend detection
-Continuous audit assistance
+                 NOW
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+  Personal OS          Knowledge Copilot
+        │                   │
+        ├─ Finance         ├─ GitHub sync
+        ├─ Tasks           ├─ Hybrid RAG
+        ├─ Goals           ├─ Citations
+        ├─ Bills           └─ Web / PDF ingest
+        └─ Briefings
+                  │
+                  ▼
+             NEXT LAYER
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+   Better Voice  Smarter   Cross-source
+   Interaction   Planning  Intelligence
 ```
+
+Potential future directions include deeper voice interaction, richer cross-source reasoning, stronger analytics, and more proactive recommendations.
 
 ---
 
-# 📸 Visual Demo
+# 📸 Product Showcase
 
-Add screenshots or GIFs here once the prototype is ready:
+> Add real screenshots from your Discord workspace here once you have them. Repository-local images are preferable because they remain stable even if an external image host changes.
 
 ```markdown
 <p align="center">
-  <img src="./docs/images/dashboard.png" width="90%">
+  <img src="docs/images/perlica-dashboard.png" width="92%" alt="Perlica dashboard">
 </p>
 
 <p align="center">
-  <em>Audit workspace — evidence, findings and report generation in one workflow.</em>
+  <img src="docs/images/perlica-copilot.png" width="46%" alt="Perlica Copilot">
+  <img src="docs/images/perlica-briefing.png" width="46%" alt="Perlica briefing">
 </p>
 ```
 
-For a more visual GitHub README, you can also place a product banner here:
-
-```markdown
-![Audit Intelligence Platform](./docs/images/hero.png)
-```
-
-Recommended visual style:
-
-**dark navy · white · electric blue · subtle grid · glassmorphism**
-
-This gives the repository more of a modern **AI infrastructure / enterprise SaaS** identity rather than a university-project appearance.
+For the README itself, the banner above is generated from a lightweight remote asset, so the repository does not need to ship a binary hero image.
 
 ---
 
-# ⚙️ Getting Started
+# 🧠 Example Prompts
 
-## Requirements
+Try talking to Perlica like a person:
 
 ```text
-Python 3.10+
-Node.js 18+
-Git
+"I spent RM12.50 on lunch and RM8.20 on LRT today."
 ```
-
-## Clone
-
-```bash
-git clone <repository-url>
-cd <project-directory>
-```
-
-## Backend
-
-```bash
-cd backend
-
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-## Frontend
-
-```bash
-cd frontend
-
-npm install
-npm run dev
-```
-
-## Environment Variables
-
-Create a `.env` file:
-
-```env
-LLM_API_KEY=<your-key>
-DATABASE_URL=<your-database-url>
-VECTOR_STORE_URL=<your-vector-store>
-```
-
-Do **not** commit secrets to Git.
-
----
-
-# 🧪 Development
-
-Run backend:
-
-```bash
-uvicorn api.main:app --reload
-```
-
-Run frontend:
-
-```bash
-npm run dev
-```
-
-Run tests:
-
-```bash
-pytest
-```
-
----
-
-# 🤝 Contribution
-
-The project is structured around modular components so that different contributors can work independently.
-
-A typical contribution flow:
 
 ```text
-Create Branch
-      ↓
-Implement Feature
-      ↓
-Add Tests
-      ↓
-Validate Pipeline
-      ↓
-Open Pull Request
-      ↓
-Review
-      ↓
-Merge
+"Set my entertainment budget to RM200 this month."
 ```
 
-Suggested branch naming:
+```text
+"Create a high priority task to finish the FYP literature review by Friday."
+```
 
 ```text
-feature/retrieval
-feature/report-generation
-feature/citation-layer
-fix/document-parser
-refactor/synthesis
+"What did I spend on transport this month?"
+```
+
+```text
+"Give me my weekly executive review."
+```
+
+```text
+"Search my knowledge base for the authentication flow."
+```
+
+```text
+"Explain how the GitHub sync pipeline chunks Python files."
+```
+
+```text
+"What should I focus on today?"
 ```
 
 ---
 
-# 🔐 Security & Responsible AI
+# 🌱 Why Discord?
 
-Audit information can contain highly sensitive organisational data.
+Because your productivity system should live where you already communicate.
 
-The system should therefore follow security principles such as:
+Discord gives Perlica a useful combination of:
 
-* Minimise the amount of sensitive information exposed to external AI services.
-* Keep secrets and credentials outside source control.
-* Apply appropriate access controls to audit evidence.
-* Maintain traceability between generated findings and their evidence.
-* Require human review before high-impact conclusions become final audit outputs.
-* Log important workflow events without unnecessarily storing sensitive content.
+```text
+Conversation
+     +
+Rich interactive components
+     +
+DMs / channels
+     +
+Notifications
+     +
+Low-friction input
+```
 
-> **Automation should increase auditability — not reduce it.**
+Instead of opening another dashboard just to record a RM15 lunch or capture a new task, Perlica meets you where the message is already being typed.
 
 ---
 
-# 👨‍💻 Project Philosophy
+# 🔐 Security Notes
 
-This project is built on one central idea:
+Never commit:
 
 ```text
-AI should not make audit evidence disappear
-inside a chatbot response.
-
-AI should make the evidence
-easier to understand,
-connect,
-review,
-and act upon.
+.env
+Discord tokens
+API keys
+GitHub tokens
+Private keys
+Credential files
 ```
+
+The application already provides environment-based configuration and repository secret filtering; treat production secrets as credentials, not configuration examples. fileciteturn6file0 fileciteturn7file0
+
+---
+
+# 📄 License
+
+Add your preferred license here before publishing the repository as an open-source project.
 
 ---
 
 <div align="center">
 
-### **Evidence → Reasoning → Confidence → Action**
+<br>
+
+### **Perlica**
+
+**Remember more. Decide faster. Do the work.**
 
 <br>
 
-*Built as an AI-assisted approach to modernising audit report workflows.*
+*An AI-powered personal operating system living inside Discord.*
 
-<br>
+<br><br>
 
-<a href="#-ai-assisted-audit-report-automation">Back to Top ↑</a>
+<a href="https://github.com/DanielKoh2004/perlica">GitHub</a>
 
-</div>
+<br><br>
 
----
-
-<div align="center">
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:2563EB,100:0F172A&height=120&section=footer" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0B1020&height=110&section=footer" width="100%"/>
 
 </div>
