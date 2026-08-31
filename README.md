@@ -1,182 +1,896 @@
-# 🌟 Perlica — Intelligent Discord Financial, Productivity & Knowledge Copilot
+<div align="center">
 
-> **Perlica** is an intelligent, zero-friction Discord personal assistant powered by Groq LLMs (Llama 3.3 70B & Llama 3.1 8B fallback), Whisper Large v3 Turbo, Llama 3.2 Vision OCR, and an **Evidence-Grounded Personal Knowledge & Codebase Copilot** running local FastEmbed ONNX vectors and SQLite FTS5.
+<a href="#">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F172A,100:2563EB&height=220&section=header&text=AI%20Audit%20Report%20Automation&fontSize=42&fontColor=FFFFFF&animation=fadeIn&fontAlignY=38&desc=From%20raw%20audit%20evidence%20to%20structured%2C%20reviewable%20reports&descAlignY=60&descSize=17" width="100%"/>
+</a>
+
+<br>
+
+### **AI-Assisted Audit Report Automation**
+
+*Turn fragmented audit evidence into structured, traceable and review-ready reports.*
+
+<br>
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python\&logoColor=white)](#)
+[![AI](https://img.shields.io/badge/AI-RAG%20Pipeline-7C3AED)](#)
+[![Backend](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi\&logoColor=white)](#)
+[![Database](https://img.shields.io/badge/Database-PostgreSQL-336791?logo=postgresql\&logoColor=white)](#)
+[![Status](https://img.shields.io/badge/Status-MVP%20Development-F59E0B)](#)
+
+<br>
+
+> **Evidence in. Reasoned findings out.**
 >
-> Designed to live entirely in your Discord DMs, Perlica effortlessly tracks everyday expenses, manages multi-phase tasks, monitors monthly budgets, accumulates dedicated savings goals, and answers technical codebase and document queries with source citations and zero hallucination.
+> An AI-assisted workflow designed to reduce the manual effort required to transform audit evidence into consistent, explainable reports.
+
+<br>
+
+</div>
 
 ---
 
-## ⚡ Core Highlights & Capabilities
+## 🧭 What Is This?
 
-### 🤖 1. Evidence-Grounded Knowledge & Codebase Copilot
-* **Multi-Source Ingestion**:
-  * 🐙 **GitHub Repositories (`/repo sync`)**: 1-call recursive tree crawler via GitHub REST API with incremental Git SHA reconciliation (skips unchanged files, replaces modified code in an atomic commit, and purges deleted files with zero ghost chunks).
-  * 📄 **PDF Documents (`/ingest source_type:pdf`)**: Page-aware extraction via `pypdf` with thread offloading and clause detection (`[contract.pdf > Page 4 > Clause 8.1]`).
-  * 🌐 **Web Articles (`/ingest source_type:web`)**: SSRF-hardened HTML extraction via `trafilatura`.
-  * 📝 **Instant Notes (`/note`)**: Real-time indexed knowledge snippets saved directly into SQLite.
-* **Hybrid Retrieval (FastEmbed + SQLite FTS5)**:
-  * Local quantized 384-d `bge-small-en-v1.5` embeddings (~45MB RAM, 8ms latency) + SQLite FTS5 with symbol-aware `_` tokenization.
-  * Merged via **Reciprocal Rank Fusion (RRF)** for high-precision technical symbol and document search.
-* **The 3-State Abstention Policy**:
-  * **State 1 (Zero-Result Abstention)**: Unanswerable queries **never invoke the LLM** and return deterministic notices immediately.
-  * **State 2 (Partial Coverage Disclosure)**: Discloses coverage ratios (`5 / 10 files indexed`) when candidate sources are partially indexed without asserting non-existence.
-  * **State 3 (Grounded Synthesis)**: Synthesizes responses with clickable citations and preserves verbatim excerpts in `answers` & `answer_evidence` (survives source purges).
-* **1-Tap Raw Chunk Inspector**: Click `[📄 View Raw Source]` on any answer to inspect verbatim evidence excerpts in a Discord modal.
+Audit work rarely starts with a clean dataset.
 
----
+It starts with **documents, spreadsheets, screenshots, policies, records and scattered pieces of evidence**.
 
-### 🎙️ 2. Multi-Modal Expense & Task Ingestion
-* **Natural Malaysian & Manglish Parsing:** Log entries like `tapau nasi kandar rm 14.50 semalam`, `isi minyak petronas rm 50`, `bayar bil tnb rm 120 kelmarin`, `bought $100 s&p500`, or `Create task 'Launch App' with 3 phases: 1. Design, 2. Backend, 3. Testing`.
-* **Voice Notes (Whisper Audio Transcription):** Send voice notes directly from your phone while driving. Perlica transcribes the audio and extracts structured actions.
-* **Receipt Image OCR (Groq Vision):** Snap a photo of a physical receipt or invoice for automatic itemization and categorization.
-* **200L RON95 Fuel Subsidy Tracker:** Accurately tracks subsidized petrol at RM 1.99/L against the 200L monthly quota while isolating unsubsidized grades (RON97, Diesel) and non-fuel purchases.
+The challenge is not simply generating text.
 
----
-
-### 📋 3. Interactive 3-Button Action Gates & Guardrails
-* **Zero Accidental Writes:** Every detected entry triggers an interactive 3-button confirmation preview:
-  ```text
-  [✅ Confirm]  [✏️ Edit]  [❌ Reject]
-  ```
-* **Double-Tap Duplicate Protection:** Automatically flags identical transactions logged within a 5-minute collision window (`[⚠️ Log Anyway]` / `[🗑️ Discard Duplicate]`).
-* **10-Second Quick Undo (`[↩️ Quick Undo (10s)]`):** Ephemeral toast allowing immediate 1-tap database rollback on every confirmed action.
-
----
-
-### 🏆 4. Dedicated Wealth & DCA Portfolio (Budget-Immune)
-* **Isolated Asset Accumulation:** Dollar-Cost Averaging (DCA) commitments into equities, ETFs, crypto, and savings goals are tracked separately in `expenses(asset_name, asset_class)` and `goals`.
-* **Non-Deductible Guarantee:** Investments and savings **never deduct** from your daily living expense allowance!
-* **Deterministic Asset Normalization:** Automatically resolves variants (e.g. `voo`, `vanguard 500`, `s&p 500`) to canonical names (`S&P 500`, `Equities`).
-
----
-
-### 📅 5. Daily Command Center & Interactive Utilities
-* **Live Command Center (`/dashboard`):** Pinned overview of spending, safe daily allowance, due bills, open tasks, active goals, and DCA progress.
-* **Daily Focus Mode (`/focus`):** Single-task productivity widget with 1-tap completion, skip, and snooze.
-* **Paginated Transaction History (`/history`):** Browse past expenses by month with interactive pagination and a 1-tap delete dropdown.
-* **Malaysian Public Holidays & Long Weekends (`/holidays`):** Countdown of upcoming Federal and Selangor state holidays.
-* **Standalone HTML Executive Reports (`/report`):** Dark-mode standalone HTML report with CSS charts, budget gauges, and asset allocation tables.
-
----
-
-## 🔒 Safety & Security Architecture
-
-1. **SSRF Protection (`src/security.py`)**: Centralized security client validates URLs before fetching, resolves DNS, blocks private/loopback/link-local IPv4 & IPv6 ranges (`127.0.0.0/8`, `169.254.169.254`, `[::1]`, `10.0.0.0/8`, etc.), and validates per-hop redirects.
-2. **Secret Path & Content Denylist**: Blocks secret files (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials.json`) and performs pre-indexing regex inspection for private keys and API tokens.
-3. **Prompt-Injection Isolation**: All retrieved evidence is enclosed in `<BEGIN UNTRUSTED EVIDENCE>` blocks with strict system instructions never to execute retrieved text as instructions.
-4. **Discord Access Authorization**: Authorization checks against `ALLOWED_DISCORD_USERS` and `ALLOWED_USER_ID` protect private codebase and contract indexes.
-5. **Mandatory SQLite Pragmas**: All database connections execute `PRAGMA foreign_keys = ON;`, `PRAGMA recursive_triggers = ON;`, and `PRAGMA journal_mode = WAL;`.
-
----
-
-## 🛠️ Project Structure
+The real challenge is:
 
 ```text
-perlica/
-├── knowledge/            # Local drop folder for Markdown & PDF documents
-├── src/
-│   ├── config.py         # Pydantic v2 application configuration & secret denylists
-│   ├── security.py       # SSRF-safe HTTP client, IP validator & secret regex scanner
-│   ├── database.py       # Async aiosqlite layer (WAL pragmas, FTS5 triggers, vector CRUD, manifest diffing)
-│   ├── extractor.py      # Groq LLM extraction engine, Whisper voice transcription & Vision OCR
-│   ├── pdf_parser.py     # Page-aware PDF extractor using pypdf with thread pool offloading
-│   ├── web_scraper.py    # SSRF-safe HTML article extractor using trafilatura
-│   ├── github_sync.py    # GitHub REST API crawler, commit SHA diffing & Python AST chunker
-│   ├── rag_engine.py     # FastEmbed ONNX embedder, SQLite FTS5 BM25 search, RRF ranker & grounded LLM
-│   ├── formatters.py     # Discord UI embed builders, ASCII sparklines, Copilot QA embeds & HTML report
-│   └── bot.py            # Discord.py bot instance, slash commands, views, modals & background workers
-├── tests/
-│   ├── test_security_and_ssrf.py     # SSRF validation & secret scanning tests
-│   ├── test_reconciliation.py        # Manifest reconciliation, FTS cascades & atomic rollback tests
-│   ├── test_rag_engine.py            # Python AST chunking, symbol tokenization & abstention tests
-│   ├── test_copilot_golden.py        # 10 Golden Retrieval Queries benchmark & telemetry tests
-│   ├── test_duplicate_guardrail.py   # Double-tap duplicate collision tests
-│   ├── test_malaysian_localization.py# Fuel subsidy boundaries & holiday calendar tests
-│   ├── test_wealth_engine.py         # Canonical asset normalization & DCA tests
-│   ├── test_database.py              # Core SQLite CRUD & transaction tests
-│   ├── test_extractor.py             # LLM extraction prompt & schema validation tests
-│   ├── test_formatters.py            # Embed formatting and progress bar tests
-│   ├── test_edge_cases.py            # Edge case suite (goals, rollbacks, 25-menu cap, heatmaps)
-│   ├── test_advanced_uiux.py         # Pagination, custom IDs & autocomplete cap tests
-│   ├── test_uiux_enhancements.py     # Milestone deduplication & stateless views
-│   └── test_end_to_end_mock.py       # End-to-end simulated user interaction tests
-├── pytest.ini            # Pytest configuration with asyncio mode
-├── requirements.txt      # Production dependencies (discord.py, fastembed, pypdf, trafilatura, groq, etc.)
-└── README.md             # Project documentation
+Collect Evidence
+       ↓
+Understand Context
+       ↓
+Retrieve Relevant Evidence
+       ↓
+Reason Across Sources
+       ↓
+Generate Findings
+       ↓
+Attach Evidence
+       ↓
+Human Review
+       ↓
+Final Report
+```
+
+**AI-Assisted Audit Report Automation** is designed around this workflow.
+
+Rather than treating an LLM as a generic text generator, the system separates **evidence retrieval, reasoning, structured output and report generation** so that the resulting report can be inspected and traced back to its supporting evidence.
+
+---
+
+## 🎯 Core Philosophy
+
+### **Don't let AI replace the auditor.**
+
+Let AI handle the repetitive work.
+
+Let humans handle judgement.
+
+```text
+┌─────────────────────────────────────────────────────┐
+│                    AUDIT EVIDENCE                   │
+│                                                     │
+│ Documents · Policies · Records · Findings · Data   │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+             ┌───────────────────┐
+             │   Evidence Layer  │
+             │  Parse + Retrieve │
+             └─────────┬─────────┘
+                       │
+                       ▼
+             ┌───────────────────┐
+             │   Reasoning Layer │
+             │ Analyze + Synthesize│
+             └─────────┬─────────┘
+                       │
+                       ▼
+             ┌───────────────────┐
+             │ Report Layer      │
+             │ Structure + Render│
+             └─────────┬─────────┘
+                       │
+                       ▼
+              ┌────────────────┐
+              │ Human Reviewer │
+              └────────────────┘
+```
+
+The goal is **audit acceleration without sacrificing traceability**.
+
+---
+
+# ✨ Why It Exists
+
+Traditional report preparation often requires auditors to repeatedly perform the same mechanical tasks:
+
+| Manual Task                           | Automation Opportunity            |
+| ------------------------------------- | --------------------------------- |
+| Search through supporting documents   | 🔎 Semantic evidence retrieval    |
+| Extract relevant information          | 📄 Structured document processing |
+| Compare evidence against requirements | 🧠 AI-assisted reasoning          |
+| Draft findings                        | ✍️ Structured synthesis           |
+| Insert supporting evidence            | 🔗 Automatic citations            |
+| Format final reports                  | 📑 Automated report generation    |
+| Review inconsistencies                | ✅ Validation and human review     |
+
+The system focuses on removing the **repetitive cognitive overhead** while keeping the auditor in control of the final judgement.
+
+---
+
+# 🧠 System Concept
+
+## The Evidence → Reasoning → Report Pipeline
+
+```text
+        RAW INPUT
+            │
+            ▼
+┌─────────────────────────┐
+│ Document Ingestion      │
+│ PDF / DOCX / XLSX / etc │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│ Document Processing     │
+│ Parsing + Chunking      │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│ Knowledge / Retrieval   │
+│ Embeddings + Search     │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│ Audit Reasoning         │
+│ Evidence → Finding      │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│ Structured Answer       │
+│ Findings + Evidence     │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│ Report Formatter        │
+│ Sections + Citations    │
+└────────────┬────────────┘
+             │
+             ▼
+       FINAL REPORT
 ```
 
 ---
 
-## 🚀 Getting Started
+# 🏗️ Architecture
 
-### 1. Prerequisites
-* Python 3.11+
-* A [Discord Bot Token](https://discord.com/developers/applications) with Message Content and Server Members intents enabled.
-* A [Groq API Key](https://console.groq.com/).
-* *(Optional)* A [GitHub Personal Access Token](https://github.com/settings/tokens) for indexing private repositories.
+```text
+┌───────────────────────────────────────────────────────────────┐
+│                         USER / AUDITOR                        │
+│                                                               │
+│ Upload Evidence · Review Findings · Inspect Citations        │
+└───────────────────────────────┬───────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                         APPLICATION                           │
+│                                                               │
+│  ┌──────────────┐   ┌───────────────┐   ┌────────────────┐  │
+│  │ Ingestion    │   │ Audit Workflow│   │ Report Builder │  │
+│  └──────┬───────┘   └───────┬───────┘   └───────┬────────┘  │
+│         │                     │                   │            │
+└─────────┼─────────────────────┼───────────────────┼────────────┘
+          │                     │                   │
+          ▼                     ▼                   ▼
+┌───────────────────────────────────────────────────────────────┐
+│                         AI / RAG LAYER                        │
+│                                                               │
+│  Retrieval → Context Assembly → Reasoning → Validation       │
+│                                                               │
+│                  ┌─────────────────────────┐                  │
+│                  │ Structured AI Response  │                  │
+│                  │                         │                  │
+│                  │ • Findings              │                  │
+│                  │ • Evidence              │                  │
+│                  │ • Citations             │                  │
+│                  │ • Confidence / Coverage │                  │
+│                  └────────────┬────────────┘                  │
+└───────────────────────────────┼───────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────┐
+│                          DATA LAYER                            │
+│                                                               │
+│ Vector Store · Relational Database · Audit Artifacts         │
+└───────────────────────────────────────────────────────────────┘
+```
 
-### 2. Installation & Setup
+---
+
+# 🔍 Evidence-First RAG
+
+The system is designed around a simple principle:
+
+> **A generated statement should have evidence behind it.**
+
+Instead of directly asking an LLM:
+
+```text
+"Write my audit report."
+```
+
+the system progressively builds context:
+
+```text
+Question
+   ↓
+Retrieve relevant evidence
+   ↓
+Rank / filter evidence
+   ↓
+Construct grounded context
+   ↓
+Generate structured finding
+   ↓
+Attach supporting citations
+   ↓
+Validate output
+```
+
+This makes the AI output more useful for audit workflows because reviewers can inspect **why a finding was produced**.
+
+---
+
+# 📦 Structured AI Output
+
+Rather than allowing the model to return an uncontrolled block of prose, the synthesis layer produces structured information.
+
+Example:
+
+```json
+{
+  "finding": {
+    "title": "Access Review Evidence Gap",
+    "severity": "Medium",
+    "description": "Periodic access review evidence was incomplete.",
+    "impact": "Insufficient evidence exists to demonstrate...",
+    "recommendation": "Establish and retain periodic review records."
+  },
+  "citations": [
+    {
+      "source": "Access_Control_Policy.pdf",
+      "page": 12
+    },
+    {
+      "source": "User_Access_Review.xlsx",
+      "sheet": "Q2 Review"
+    }
+  ]
+}
+```
+
+This separation gives the application something much more valuable than plain text:
+
+**machine-readable audit reasoning.**
+
+---
+
+# 🧩 Key Components
+
+## 📥 Evidence Ingestion
+
+Designed to bring heterogeneous audit evidence into one processing pipeline.
+
+Typical sources include:
+
+```text
+PDF
+DOCX
+XLSX
+CSV
+Text
+Screenshots / supporting material
+```
+
+Each source is transformed into a representation that can be indexed, retrieved and referenced during the reasoning process.
+
+---
+
+## 🔎 Retrieval Engine
+
+The retrieval layer identifies evidence relevant to a particular audit question.
+
+Conceptually:
+
+```text
+Audit Requirement
+       │
+       ▼
+Semantic Search
+       │
+       ▼
+Candidate Evidence
+       │
+       ▼
+Relevance Filtering
+       │
+       ▼
+Context Window
+```
+
+The objective is not to retrieve **everything**.
+
+It is to retrieve the **right evidence**.
+
+---
+
+## 🧠 AI Synthesis
+
+The synthesis layer combines retrieved evidence into structured findings.
+
+The output can contain:
+
+* Finding
+* Description
+* Impact
+* Recommendation
+* Evidence
+* Citations
+* Confidence / coverage metadata
+
+This creates a clean boundary between **AI reasoning** and **presentation**.
+
+---
+
+## 🔗 Citation Layer
+
+Every generated finding can maintain a relationship with the evidence used to support it.
+
+```text
+Finding
+   │
+   ├── Evidence #01
+   │      └── Policy.pdf → Page 14
+   │
+   ├── Evidence #02
+   │      └── AccessReview.xlsx → Sheet Q2
+   │
+   └── Evidence #03
+          └── Procedure.docx → Section 3.2
+```
+
+The result is an **evidence graph**, rather than disconnected AI-generated paragraphs.
+
+---
+
+# 🖥️ Report Generation
+
+The final report layer transforms structured findings into a human-friendly deliverable.
+
+```text
+STRUCTURED FINDINGS
+        │
+        ▼
+┌───────────────────────┐
+│ Report Template       │
+├───────────────────────┤
+│ Executive Summary     │
+│ Audit Scope           │
+│ Findings              │
+│ Risk Assessment       │
+│ Recommendations       │
+│ Supporting Evidence   │
+│ References            │
+└───────────┬───────────┘
+            │
+            ▼
+      FINAL REPORT
+```
+
+The important architectural decision is that **formatting happens after reasoning**.
+
+This allows the same structured result to support multiple frontends and report formats.
+
+---
+
+# 🛡️ Design Principles
+
+### 01 — Evidence Before Generation
+
+The model should reason over retrieved evidence rather than inventing unsupported conclusions.
+
+### 02 — Structured Before Presentation
+
+AI produces structured data first.
+
+UI and report generators decide how that data should look.
+
+### 03 — Traceability by Default
+
+Important claims should remain connected to their supporting evidence.
+
+### 04 — Human-in-the-Loop
+
+AI assists with analysis and drafting.
+
+The auditor retains final authority.
+
+### 05 — Modular AI Pipeline
+
+Retrieval, synthesis, validation and formatting remain separable components so that individual parts can evolve independently.
+
+---
+
+# 📊 Quality Dimensions
+
+A useful audit AI system cannot be judged by generation quality alone.
+
+We care about multiple dimensions:
+
+| Dimension              | Question                                       |
+| ---------------------- | ---------------------------------------------- |
+| **Retrieval Accuracy** | Did we retrieve the right evidence?            |
+| **Groundedness**       | Is the finding supported by evidence?          |
+| **Citation Coverage**  | Can important claims be traced?                |
+| **Consistency**        | Does the output follow the expected structure? |
+| **Reviewability**      | Can an auditor quickly validate it?            |
+| **Generation Quality** | Is the final report clear and professional?    |
+
+The objective is therefore not simply:
+
+```text
+Better AI
+```
+
+but:
+
+```text
+Better Evidence
+        +
+Better Reasoning
+        +
+Better Traceability
+        =
+Better Audit Workflow
+```
+
+---
+
+# 🧰 Technology Direction
+
+| Layer               | Technology                    |
+| ------------------- | ----------------------------- |
+| Application Backend | Python                        |
+| API Layer           | FastAPI                       |
+| AI / LLM Layer      | LLM-based reasoning pipeline  |
+| Retrieval           | RAG / semantic retrieval      |
+| Structured Output   | Typed schemas / JSON          |
+| Data Storage        | Relational + vector storage   |
+| Document Processing | File-specific parsers         |
+| Report Generation   | Structured document rendering |
+| Frontend            | Web-based interface           |
+
+> Technology choices can evolve independently because the architecture separates ingestion, retrieval, reasoning and presentation.
+
+---
+
+# 📂 Project Structure
+
+```text
+project/
+│
+├── backend/
+│   ├── api/
+│   │   ├── main.py
+│   │   ├── routes/
+│   │   └── schemas/
+│   │
+│   ├── ingestion/
+│   │   ├── loaders/
+│   │   ├── parsers/
+│   │   └── chunking/
+│   │
+│   ├── retrieval/
+│   │   ├── embeddings/
+│   │   ├── vector_store/
+│   │   └── retriever.py
+│   │
+│   ├── synthesis/
+│   │   ├── prompts/
+│   │   ├── pipeline.py
+│   │   └── validators.py
+│   │
+│   ├── formatters/
+│   │   ├── report.py
+│   │   └── citations.py
+│   │
+│   └── config/
+│
+├── frontend/
+│   ├── components/
+│   ├── pages/
+│   ├── hooks/
+│   └── services/
+│
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   └── examples/
+│
+├── tests/
+│
+├── docs/
+│
+└── README.md
+```
+
+---
+
+# 🚦 Workflow
+
+### Step 1 — Upload Evidence
+
+Provide the audit documents and supporting material.
+
+### Step 2 — Process
+
+Documents are parsed, normalized and prepared for retrieval.
+
+### Step 3 — Ask / Define Audit Requirement
+
+The system receives the audit requirement, question or assessment criteria.
+
+### Step 4 — Retrieve
+
+Relevant evidence is identified from the knowledge base.
+
+### Step 5 — Synthesize
+
+The AI generates a structured finding grounded in the retrieved evidence.
+
+### Step 6 — Inspect
+
+The auditor reviews the finding and its supporting citations.
+
+### Step 7 — Generate
+
+Approved structured findings are transformed into the final report.
+
+---
+
+# 🔬 Example
+
+Suppose the audit requirement is:
+
+```text
+Verify that privileged user access is periodically reviewed.
+```
+
+The system might retrieve:
+
+```text
+Access Control Policy
+        +
+Quarterly Access Review
+        +
+User Permission Export
+```
+
+Then produce:
+
+```text
+Finding
+────────────────────────────────────────
+Privileged access review evidence is
+incomplete for the sampled period.
+
+Risk
+────────────────────────────────────────
+Without complete review evidence, the
+organisation cannot demonstrate that
+excessive privileges are periodically
+identified and removed.
+
+Recommendation
+────────────────────────────────────────
+Implement a documented quarterly review
+process with retained approval evidence.
+
+Evidence
+────────────────────────────────────────
+✓ Access_Control_Policy.pdf — p.12
+✓ Access_Review_Q2.xlsx — Review Sheet
+```
+
+The important part is not merely that the AI wrote the finding.
+
+It is that the reviewer can **follow the chain back to the evidence**.
+
+---
+
+# 🌐 Product Vision
+
+The long-term goal is bigger than automatic report writing.
+
+The system can evolve toward an **AI audit intelligence layer**:
+
+```text
+                 ┌──────────────────────┐
+                 │   AUDIT KNOWLEDGE    │
+                 │                      │
+                 │ Policies             │
+                 │ Controls             │
+                 │ Evidence             │
+                 │ Historical Findings  │
+                 └──────────┬───────────┘
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │   AI AUDIT ENGINE    │
+                 │                      │
+                 │ Retrieve             │
+                 │ Compare              │
+                 │ Reason               │
+                 │ Validate             │
+                 └──────────┬───────────┘
+                            │
+             ┌──────────────┼──────────────┐
+             ▼              ▼              ▼
+        Findings       Risk Signals    Reports
+```
+
+Instead of asking:
+
+> "Can AI write an audit report?"
+
+the more interesting question becomes:
+
+> **"Can AI build a continuously traceable understanding of an organisation's audit evidence?"**
+
+---
+
+# 🗺️ Roadmap
+
+```text
+PHASE 01
+████████████████████  Foundation
+Document ingestion
+RAG retrieval
+Structured synthesis
+
+        ↓
+
+PHASE 02
+████████████████░░░░  Audit Intelligence
+Citation graph
+Evidence coverage
+Validation
+Human review workflows
+
+        ↓
+
+PHASE 03
+████████████░░░░░░░░  Automation
+Automated report generation
+Reusable audit templates
+Workflow orchestration
+
+        ↓
+
+PHASE 04
+████████░░░░░░░░░░░░  Intelligence Layer
+Historical audit knowledge
+Cross-audit comparison
+Risk trend detection
+Continuous audit assistance
+```
+
+---
+
+# 📸 Visual Demo
+
+Add screenshots or GIFs here once the prototype is ready:
+
+```markdown
+<p align="center">
+  <img src="./docs/images/dashboard.png" width="90%">
+</p>
+
+<p align="center">
+  <em>Audit workspace — evidence, findings and report generation in one workflow.</em>
+</p>
+```
+
+For a more visual GitHub README, you can also place a product banner here:
+
+```markdown
+![Audit Intelligence Platform](./docs/images/hero.png)
+```
+
+Recommended visual style:
+
+**dark navy · white · electric blue · subtle grid · glassmorphism**
+
+This gives the repository more of a modern **AI infrastructure / enterprise SaaS** identity rather than a university-project appearance.
+
+---
+
+# ⚙️ Getting Started
+
+## Requirements
+
+```text
+Python 3.10+
+Node.js 18+
+Git
+```
+
+## Clone
+
 ```bash
-git clone https://github.com/DanielKoh2004/perlica.git
-cd perlica
+git clone <repository-url>
+cd <project-directory>
+```
+
+## Backend
+
+```bash
+cd backend
+
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### 3. Environment Variables
-Create a `.env` file in the root directory:
-
-```env
-DISCORD_TOKEN=your_discord_bot_token_here
-ALLOWED_USER_ID=your_discord_user_id_here
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
-GITHUB_TOKEN=your_github_pat_token_here
-TIMEZONE=Asia/Kuala_Lumpur
-DATABASE_PATH=tracker.db
-DAILY_SUMMARY_TIME=22:00
-MORNING_BRIEFING_TIME=08:30
-WEEKLY_REVIEW_TIME=20:00
-```
-
----
-
-## 🧪 Running the Test Suite
-
-Perlica comes with **75 comprehensive automated unit, integration, and benchmark tests**:
+## Frontend
 
 ```bash
-python -m pytest -v
+cd frontend
+
+npm install
+npm run dev
 ```
 
-Expected output:
+## Environment Variables
+
+Create a `.env` file:
+
+```env
+LLM_API_KEY=<your-key>
+DATABASE_URL=<your-database-url>
+VECTOR_STORE_URL=<your-vector-store>
+```
+
+Do **not** commit secrets to Git.
+
+---
+
+# 🧪 Development
+
+Run backend:
+
+```bash
+uvicorn api.main:app --reload
+```
+
+Run frontend:
+
+```bash
+npm run dev
+```
+
+Run tests:
+
+```bash
+pytest
+```
+
+---
+
+# 🤝 Contribution
+
+The project is structured around modular components so that different contributors can work independently.
+
+A typical contribution flow:
+
 ```text
-============================= 75 passed in 7.69s =============================
+Create Branch
+      ↓
+Implement Feature
+      ↓
+Add Tests
+      ↓
+Validate Pipeline
+      ↓
+Open Pull Request
+      ↓
+Review
+      ↓
+Merge
+```
+
+Suggested branch naming:
+
+```text
+feature/retrieval
+feature/report-generation
+feature/citation-layer
+fix/document-parser
+refactor/synthesis
 ```
 
 ---
 
-## 💬 Command Reference & Cheat Sheet
+# 🔐 Security & Responsible AI
 
-| Feature | Slash Command | DM Chat Trigger | Description |
-| :--- | :--- | :--- | :--- |
-| **Ask Copilot** | `/ask <query> [in_source]` | `ask: <query>` or `? <query>` | Evidence-grounded technical Q&A with deep citations & raw inspector |
-| **Manage Repos** | `/repo sync\|purge\|info` | — | Sync GitHub repo with incremental Git SHA reconciliation in background |
-| **Ingest URL / PDF**| `/ingest web\|pdf <target>` | — | SSRF-safe webpage or local PDF extraction |
-| **Instant Note** | `/note <content> [title]` | — | Save and immediately index an instant knowledge snippet |
-| **Sources Dashboard**| `/sources` | `sources` or `kb` | Live dashboard of all indexed sources, coverage ratios & status |
-| **Command Center** | `/dashboard` | `dashboard` | Pinned live dashboard with 1-click in-place refresh |
-| **Daily Focus** | `/focus` | `focus` | Daily single-task focus widget with skip & snooze |
-| **Transaction History**| `/history` | — | Paginated transaction explorer with 1-tap delete dropdown |
-| **Public Holidays** | `/holidays [days]` | `holidays` or `cuti` | Upcoming Selangor & Federal public holidays & long weekends |
-| **Wealth & DCA** | `/investments` | `investments` or `dca` | Dedicated Wealth portfolio, asset allocation & DCA tracking |
-| **Savings Goals** | `/goals` | `goals` | View active savings goals and progress meters |
-| **Open Tasks** | `/tasks` | `tasks` | Batch task completion dropdown |
-| **Budget Health** | `/budgets` | `budgets` | View and adjust monthly category budget limits |
-| **HTML Report** | `/report` | `report` | Generate & download standalone dark-mode HTML executive report |
-| **Category Inspector**| `/category` | — | Itemized category inspector with autocomplete |
-| **Force Sync** | — | `!sync` | Force sync Discord application slash commands |
+Audit information can contain highly sensitive organisational data.
+
+The system should therefore follow security principles such as:
+
+* Minimise the amount of sensitive information exposed to external AI services.
+* Keep secrets and credentials outside source control.
+* Apply appropriate access controls to audit evidence.
+* Maintain traceability between generated findings and their evidence.
+* Require human review before high-impact conclusions become final audit outputs.
+* Log important workflow events without unnecessarily storing sensitive content.
+
+> **Automation should increase auditability — not reduce it.**
 
 ---
 
-## 📄 License
-This project is open-source and available under the [MIT License](LICENSE).
+# 👨‍💻 Project Philosophy
+
+This project is built on one central idea:
+
+```text
+AI should not make audit evidence disappear
+inside a chatbot response.
+
+AI should make the evidence
+easier to understand,
+connect,
+review,
+and act upon.
+```
+
+---
+
+<div align="center">
+
+### **Evidence → Reasoning → Confidence → Action**
+
+<br>
+
+*Built as an AI-assisted approach to modernising audit report workflows.*
+
+<br>
+
+<a href="#-ai-assisted-audit-report-automation">Back to Top ↑</a>
+
+</div>
+
+---
+
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:2563EB,100:0F172A&height=120&section=footer" width="100%"/>
+
+</div>
